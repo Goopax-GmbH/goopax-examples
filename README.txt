@@ -5,7 +5,7 @@ Running the script
 
     ./build-all.sh
 
-will fetch and build all required libraries (SDL3, OpenCV, boost, Eigen, glatter), unless they are already installed on your system, and then continue to build the example programs.
+will fetch and build all missing libraries (SDL3, OpenCV, boost, Eigen, glatter), and then the example programs. Building the libraries may take a while. 
 
 If you prefer not to build external libraries, you can start cmake by hand:
 
@@ -20,10 +20,10 @@ Windows
 To build the example programs on windows, install the following applications:
 - visual studio 2022
 - cmake
-- git (with git bash)
-Use git bash to run the build script
+- git
+Then run
 
-    ./build-all.sh
+    build-all.bat
 
 
 MacOS
