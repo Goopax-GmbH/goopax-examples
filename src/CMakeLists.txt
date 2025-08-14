@@ -149,6 +149,7 @@ if (GOOPAX_DRAW_WITH_OPENGL OR GOOPAX_DRAW_WITH_METAL AND NOT GOOPAX_DEBUG AND N
   endif()
 endif()
 
+if (NOT ANDROID)
 add_sdl_main(cosmology glatter goopax_draw)
 if (TARGET cosmology)
   if (TARGET opencv)
@@ -157,6 +158,7 @@ if (TARGET cosmology)
   if (APPLE)
     SET_SOURCE_FILES_PROPERTIES(cosmology.cpp PROPERTIES LANGUAGE OBJCXX)
   endif()
+endif()
 endif()
 
 add_sdl_main(deep-zoom-mandelbrot Boost::boost goopax_draw)
