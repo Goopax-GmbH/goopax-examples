@@ -46,10 +46,12 @@ To build for the iOS simulator, follow the steps for iOS, but with the additiona
 
 Cross-Compiling for Android
 ---------------------------
-Set the ANDROID_NDK_ROOT environment variable to the location of the Android NDK.
+The cmake builtin Android target is always a bit behind the cmake toolchain in the NDK. This is the latest supported official cmake with the builtin toolchain.
+
+    export PATH=$HOME/Android/Sdk/cmake/3.30.5/bin:$PATH
 
 Then run something like this:
 
-    ./build-all.sh -DCMAKE_SYSTEM_NAME=Android -DCMAKE_SYSTEM_VERSION=25 -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a
+    build_type="release" ABI="arm64-v8a" system_version="28" android_ndk="$HOME/Android/Sdk/ndk/29.0.13846066" bash -c './build-all.sh -G "Ninja" -DCMAKE_SYSTEM_NAME="Android" -DCMAKE_ANDROID_STL_TYPE="c++_static" -DCMAKE_SYSTEM_VERSION="$system_version" -DCMAKE_ANDROID_ARCH_ABI="$ABI" -DCMAKE_ANDROID_NDK="$android_ndk" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_FIND_ROOT_PATH="$PWD/../" -DGOOPAX_DRAW_WITH_OPENGL=0 -DGOOPAX_DRAW_WITH_METAL=0 -DGOOPAX_DRAW_WITH_VULKAN=1'
 
 For the graphical example programs, shared libraries are created. They need to be further incorporated into an android app.
