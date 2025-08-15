@@ -76,9 +76,12 @@ int main(int argc, char** argv)
     particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
     buffer<Vector3<float>> x(device, N);  // OpenGL buffer
     buffer<Vector3<float>> x2(device, N); // OpenGL buffer
-#else
+#elif WITH_OPENGL
     opengl_buffer<Vector3<float>> x(device, N);  // OpenGL buffer
     opengl_buffer<Vector3<float>> x2(device, N); // OpenGL buffer
+#else
+    buffer<Vector3<float>> x(device, N);
+    buffer<Vector3<float>> x2(device, N);
 #endif
 
     kernel CalculateForce(
@@ -145,9 +148,11 @@ int main(int argc, char** argv)
 
 #if WITH_METAL
         Renderer.render(x);
-#else
+#elif WITH_OPENGL
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);
+#else
+        cout << "Output to stdout not yet implemented" << endl;
 #endif
 
         // Because there are no other synchronization points in this demo
