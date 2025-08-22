@@ -131,7 +131,7 @@ void pingpong()
 
         wait_all_devices();
         auto dt = duration<double>(steady_clock::now() - t0);
-        cout << "N=" << N << ", time=" << dt.count() << ", average pingpong time: " << dt.count() * 1E6 / N
+        cout << "N=" << N << ", time=" << dt.count() << ", average ping time: " << dt.count() * 1E6 / N
              << " microseconds"
              << ", data=" << data[0] << endl;
         assert(data[0] == N);
