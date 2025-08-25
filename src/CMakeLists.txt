@@ -14,8 +14,11 @@ option(WITH_CUDA "WITH_CUDA" OFF)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH on)
 
 if (WIN32)
+  if (MSVC)
+    add_compile_options(/bigobj)
+  endif()
   if (NOT CMAKE_MSVC_RUNTIME_LIBRARY)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
   endif()
 endif()
 
