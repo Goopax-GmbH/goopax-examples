@@ -46,7 +46,8 @@ using chrono::steady_clock;
 using chrono::time_point;
 using goopax::interface::PI;
 
-constexpr size_t intceil(const size_t a, size_t mod)
+template<typename T>
+constexpr T intceil(const T a, T mod)
 {
     return a + (mod - ((mod + a - 1) % mod) - 1);
 }
@@ -193,14 +194,12 @@ struct treenode
     multipole<T, max_multipole> Mr;
     Vector<T, 3> rcenter;
     bool_type need_split;
-    array<bool_type, 2> need_split_child;
 
     template<class STREAM>
     friend STREAM& operator<<(STREAM& s, const treenode& n)
     {
         s << "[first_child=" << n.first_child << ", parent=" << n.parent << ", pbegin=" << n.pbegin
-          << ", pend=" << n.pend << ", rcenter=" << n.rcenter << ", split=" << n.need_split
-          << ", split_child=" << n.need_split_child << ", Mr=" << n.Mr << "]";
+          << ", pend=" << n.pend << ", rcenter=" << n.rcenter << ", split=" << n.need_split << ", Mr=" << n.Mr << "]";
         return s;
     }
 };
@@ -374,11 +373,8 @@ struct cosmos_base
     buffer<pair<signature_t, Tuint>> plist1;
     buffer<pair<signature_t, Tuint>> plist2;
     const Tsize_t treesize;
-    static const unsigned int treecount_blocksize = 2; // FIXME: Increase to 2 or so.
 
-    buffer<Tuint> blocksums;
-    buffer<Tuint> bigblocksums;
-    buffer<Tuint> numsubbuf;
+    buffer<Tuint> node_memory_request;
 
     virtual void make_tree() = 0;
 
@@ -401,12 +397,16 @@ struct cosmos_base
 
     radix_sort<pair<signature_t, Tuint>, signature_t> Radix;
 
-    kernel<void(buffer<Tuint>& blocksums, buffer<Tuint>& bigblocksums, Tuint num_blocksums)> treecount2func;
-
     struct vicinity_data
     {
         vector<Vector<Tint, 3>> local_vec;
+        set<Tuint> local_indices;
         vector<Vector<Tint, 3>> vicinity_vec;
+
+        static Tint make_index(Vector<Tint, 3> r)
+        {
+            return { r[2] * 65536 + r[1] * 256 + r[0] };
+        }
 
         static Vector<Tint, 3> parent2child(Vector<Tint, 3> p, Tint c)
         {
@@ -424,12 +424,16 @@ struct cosmos_base
         template<typename U>
         static Vector<U, 3> make_real(Vector<Tint, 3> v, U halflen)
         {
-            return Vector<U, 3>{ v[0] * pow<2, 3>(2.0), v[1] * pow<1, 3>(2.0), v[2] * pow<0, 3>(2.0) } * halflen;
+            return Vector<U, 3>{ static_cast<U>(v[0] * pow<2, 3>(2.0)),
+                                 static_cast<U>(v[1] * pow<1, 3>(2.0)),
+                                 static_cast<U>(v[2] * pow<0, 3>(2.0)) }
+                   * halflen;
         }
 
         vicinity_data(T max_distfac)
         {
             const int max_e = ceil(max_distfac) * 2 + 1;
+            assert(max_e < 128);
             Vector<Tint, 3> maxvec = { 0, 0, 0 };
 
             Vector<Tint, 3> ac;
@@ -453,6 +457,7 @@ struct cosmos_base
                         {
 
                             local_vec.push_back(ac);
+                            local_indices.insert(make_index(ac));
                             if (ac.squaredNorm() != 0)
                             {
                                 vicinity_vec.push_back(ac);
@@ -476,7 +481,7 @@ struct cosmos_base
                         {
                             cout << "L ";
                         }
-                        else if (ranges::contains(local_vec, ac))
+                        else if (local_indices.contains(make_index(ac)))
                         {
                             cout << "X ";
                         }
@@ -728,9 +733,7 @@ struct cosmos_base
 
         plist1(device, N)
         , plist2(device, N)
-        , treesize(10.3 * N + 10000)
-        , blocksums(device, (treesize + treecount_blocksize - 1) / treecount_blocksize)
-        , numsubbuf(device, 1)
+        , treesize(1.3 * N + 10000)
         , Radix(device, [](auto a, auto b) { return a.first < b.first; })
         , vdata(max_distfac)
 
@@ -781,33 +784,13 @@ struct cosmos_base
                resource<T>& out,
                const resource<pair<signature_t, Tuint>>& plist,
                gpu_uint size) { gpu_for_global(0, size, [&](gpu_uint k) { out[k] = in[plist[k].second]; }); });
-
-        treecount2func.assign(
-            device, [](resource<Tuint>& blocksums, resource<Tuint>& bigblocksums, gpu_uint num_blocksums) {
-                assert(global_size() % treecount_blocksize == 0);
-                gpu_for_global(0, num_blocksums, (global_size() / treecount_blocksize), [&](gpu_uint offset) {
-                    gpu_uint sum = 0;
-                    gpu_for(offset, min(offset + global_size() / treecount_blocksize, num_blocksums), [&](gpu_uint k) {
-                        gpu_uint oldsum = sum;
-                        sum += blocksums[k];
-                        blocksums[k] = oldsum; // FIXME: Can this me optimized? blocking? Is this done automatically?
-                    });
-                    bigblocksums[offset * treecount_blocksize / global_size()] = sum;
-                });
-            });
-
-        bigblocksums.assign(device, (treesize + treecount2func.global_size() - 1) / treecount2func.global_size());
     }
 };
-
-template<class T>
-const unsigned int cosmos_base<T>::treecount_blocksize;
 
 template<class T, unsigned int max_multipole>
 struct cosmos : public cosmos_base<T>
 {
     using gpu_T = typename gettype<T>::gpu;
-    using cosmos_base<T>::treecount_blocksize;
     using cosmos_base<T>::vdata;
     using typename cosmos_base<T>::vicinity_data;
     using cosmos_base<T>::x;
@@ -818,9 +801,6 @@ struct cosmos : public cosmos_base<T>
     using cosmos_base<T>::plist2;
     using cosmos_base<T>::tmp;
     using cosmos_base<T>::tmps;
-    using cosmos_base<T>::blocksums;
-    using cosmos_base<T>::bigblocksums;
-    using cosmos_base<T>::numsubbuf;
 
     buffer<treenode<T, max_multipole>> tree;
     buffer<force_treenode<T, max_multipole>> force_tree;
@@ -839,26 +819,20 @@ struct cosmos : public cosmos_base<T>
 
     // buffer<treenode<T, max_multipole>> fill3;
 
-    kernel<void(buffer<treenode<T, max_multipole>>& tree,
-                Tuint treebegin,
-                Tuint treeend,
-                // const gpu_uint max_super_particles,
-                buffer<Tuint>& blocksums)>
-        treecount1;
+    kernel<void(buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange)> treecount1;
 
-    array<kernel<void(buffer<treenode<T, max_multipole>>& tree,
-                      const buffer<pair<signature_t, Tuint>>& particles,
-                      const buffer<Vector<T, 3>>& x,
-                      Tuint treeoffset,
-                      Tuint treesize,
-                      Tuint tree_maxsize,
-                      Tuint depth,
-                      T halflen_sublevel,
-                      const buffer<Tuint>& blocksums,
-                      const buffer<Tuint>& bigblocksums,
-                      buffer<Tuint>& numsub)>,
-          3>
-        treecount3;
+    kernel<void(
+        buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange, buffer<Tuint>& node_memory_request)>
+        treecount2;
+
+    kernel<void(buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange)> treecount3;
+
+    kernel<void(buffer<treenode<T, max_multipole>>& tree,
+                const buffer<pair<signature_t, Tuint>>& particles,
+                pair<Tuint, Tuint> child_treerange,
+                Tuint depth,
+                T halflen_sublevel)>
+        treecount4;
 
     kernel<void(pair<Tuint, Tuint> treerange, T halflen)> make_surrounding;
 
@@ -896,8 +870,7 @@ struct cosmos : public cosmos_base<T>
         this->apply_scalar(mass, tmps, plist1, plist1.size());
         swap(mass, tmps);
 
-        static vector<pair<Tuint, Tuint>> treerange;
-        treerange.clear();
+        vector<pair<Tuint, Tuint>> treeranges;
         Tuint treesize = 1;
         Tuint treeoffset = 3;
 
@@ -931,7 +904,9 @@ struct cosmos : public cosmos_base<T>
             double level_halflen = halflen;
             for (Tuint depth = 0; depth < MAX_DEPTH(); ++depth)
             {
-                treerange.push_back(make_pair(treeoffset, treeoffset + treesize));
+                pair<Tuint, Tuint> treerange = { treeoffset, treeoffset + treesize };
+
+                treeranges.push_back(treerange);
                 // cout << "\ndepth " << depth << endl;
                 //<< ": tree: before:\n";
                 //  print(tree, treerange.back());
@@ -941,46 +916,77 @@ struct cosmos : public cosmos_base<T>
 
                 // if (depth != 0)
                 {
-                    make_surrounding(treerange.back(), level_halflen);
+                    make_surrounding(treerange, level_halflen);
                     // cout << "\nafter make_surrounding:\n";
                     // print(tree, treerange.back());
                 }
 
-                this->treecount1(tree, treeoffset, treeoffset + treesize, blocksums).wait();
+                this->treecount1(tree, treerange).wait();
+
+                // treecount2 and treecount3 might overshoot and handle nodes behind the end. This makes sure they
+                // behave correctly.
+                tree.fill({ .first_child = {},
+                            .parent = {},
+                            .pbegin = {},
+                            .pend = {},
+                            .Mr = {},
+                            .rcenter = {},
+                            .need_split = false },
+                          treerange.second,
+                          treerange.first
+                              + intceil(treerange.second - treerange.first, (Tuint)treecount1.local_size()));
+
+                surrounding_buf.fill(
+                    0,
+                    treerange.second * num_surrounding(),
+                    (treerange.first + intceil(treerange.second - treerange.first, (Tuint)treecount1.local_size()))
+                        * num_surrounding());
+
+                this->treecount2(tree, treerange, this->node_memory_request).wait();
 
                 // cout << "\nafter treecount1:\n";
                 // print(tree, treerange.back());
+                // cout << "depth=" << depth << ": node_memory_request=" << this->node_memory_request << endl;
 
-                cout1 << "after treecount1:\nblocksums=" << blocksums << endl;
-                this->treecount2func(
-                    blocksums, bigblocksums, (treesize + treecount_blocksize - 1) / treecount_blocksize);
-                cout1 << "after treecount2:\nblocksums=" << blocksums << endl;
-                cout1 << "bigblocksums=" << bigblocksums << endl;
+                unsigned int num_sub2 = 0;
+                {
+                    buffer_map node_memory_request(this->node_memory_request);
+                    Tuint next_index = treerange.second / 2;
+                    for (auto& n : node_memory_request)
+                    {
+                        Tuint index = next_index;
+                        num_sub2 += n;
+                        next_index += n;
+                        n = index;
+                    }
+                }
+                // cout << "after adding: node_memory_request=" << this->node_memory_request << endl;
+
+                if (treerange.second + intceil(2 * num_sub2, treecount1.local_size()) > tree.size())
+                {
+                    throw std::runtime_error("tree too small");
+                }
 
                 // cout << "\nafter treecount2:\n";
                 // print(tree, treerange.back());
 
-                treecount3[modulo((int)depth, 3)](tree,
-                                                  plist1,
-                                                  x,
-                                                  treeoffset,
-                                                  treesize,
-                                                  tree.size(),
-                                                  MAX_DEPTH() - depth - 1,
-                                                  halflen * pow(2.0, (-1 - Tint(depth)) / 3.0),
-                                                  blocksums,
-                                                  bigblocksums,
-                                                  numsubbuf)
-                    .wait();
+                treecount3(tree, treerange).wait();
 
                 // cout << "\nafter treecount3:\n";
-                // print(tree, treerange.back());
+                // print(tree, treerange);
 
-                const_buffer_map<Tuint> numsubbuf(this->numsubbuf);
-                const Tuint num_sub = numsubbuf[0];
-                cout1 << "num_sub=" << num_sub << endl;
+                treeoffset += treesize;
+                treesize = num_sub2 * 2;
 
-                assert(treeoffset + treesize + num_sub <= tree.size()); // FIXME: Make dynamic.
+                treecount4(tree,
+                           plist1,
+                           { treeoffset, treeoffset + treesize },
+                           MAX_DEPTH() - depth - 1,
+                           halflen * pow(2.0, (-1 - Tint(depth)) / 3.0))
+                    .wait();
+
+                // cout << "\nafter treecount4:\n";
+                // print(tree, { treeoffset, treeoffset + treesize });
 
                 Vector<T, 3> boxsize;
                 for (Tuint k = 0; k < 3; ++k)
@@ -989,10 +995,7 @@ struct cosmos : public cosmos_base<T>
                 }
                 cout1 << "boxsize=" << boxsize << endl;
 
-                treeoffset += treesize;
-                treesize = num_sub;
-
-                if (num_sub == 0)
+                if (num_sub2 == 0)
                     break;
 
                 level_halflen *= pow(2.0, -1.0 / 3);
@@ -1005,11 +1008,11 @@ struct cosmos : public cosmos_base<T>
 #endif
 
         {
-            Tdouble level_halflen = halflen * pow(2.0, -1.0 / 3 * treerange.size());
-            for (Tuint depth = treerange.size() - 1; depth != Tuint(-1); --depth)
+            Tdouble level_halflen = halflen * pow(2.0, -1.0 / 3 * treeranges.size());
+            for (Tuint depth = treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
-                upwards[modulo((int)depth, 3)][depth == treerange.size() - 1](
-                    tree, x, mass, treerange[depth].first, treerange[depth].second, level_halflen);
+                upwards[modulo((int)depth, 3)][depth == treeranges.size() - 1](
+                    tree, x, mass, treeranges[depth].first, treeranges[depth].second, level_halflen);
                 level_halflen *= pow(2.0, 1.0 / 3);
 
                 // cout << "depth=" << depth << ": after upwards:\n";
@@ -1022,9 +1025,9 @@ struct cosmos : public cosmos_base<T>
         auto t2 = steady_clock::now();
 #endif
 
-        if (treerange.size() > MAX_DEPTH())
+        if (treeranges.size() > MAX_DEPTH())
         {
-            cerr << "treerange.size()=" << treerange.size() << " > MAX_DEPTH=" << MAX_DEPTH() << endl;
+            cerr << "treerange.size()=" << treeranges.size() << " > MAX_DEPTH=" << MAX_DEPTH() << endl;
             throw std::runtime_error("MAX_DEPTH exceeded");
         }
         // cout << "force: null nodes:\n";
@@ -1034,15 +1037,15 @@ struct cosmos : public cosmos_base<T>
 
         {
             double level_halflen = halflen;
-            for (uint depth = 1; depth < treerange.size(); ++depth)
+            for (uint depth = 1; depth < treeranges.size(); ++depth)
             {
                 level_halflen *= pow(2.0, -1.0 / 3);
-                downwards2(treerange[depth], level_halflen).wait();
+                downwards2(treeranges[depth], level_halflen).wait();
 
                 // cout << "depth=" << depth << ": after downwards:\n";
                 // print(force_tree, treerange[depth]);
 
-                handle_particles[modulo((int)depth, 3)](x, v, treerange[depth], level_halflen).wait();
+                handle_particles[modulo((int)depth, 3)](x, v, treeranges[depth], level_halflen).wait();
 
                 // cout << "depth=" << depth << ": after handle_particles:\n";
                 // print(force_tree, treerange[depth]);
@@ -1074,139 +1077,152 @@ struct cosmos : public cosmos_base<T>
                     .pend = 0,
                     .Mr = zero,
                     .rcenter = { 0, 0, 0 },
-                    .need_split = false,
-                    .need_split_child = {} },
+                    .need_split = false },
                   0,
                   4);
         {
             buffer_map tree(this->tree, 0, 4);
             tree[3].pend = plist1.size();
             tree[3].need_split = true;
-            tree[3].need_split_child.fill(true);
         }
 
         force_tree.fill({ .Mr = zero }, 0, 4);
 
-        treecount1.assign(
+        treecount1.assign(device,
+                          [this](resource<treenode<T, max_multipole>>& tree, pair<gpu_uint, gpu_uint> treerange) {
+                              gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
+                                  gpu_uint totnum = tree[self].pend - tree[self].pbegin;
+                                  for (uint si = 0; si < num_surrounding(); ++si)
+                                  {
+                                      gpu_uint cousin = surrounding_link(self, si);
+                                      totnum += tree[cousin].pend - tree[cousin].pbegin;
+                                  }
+                                  // If true, force calculation wants to go further down the tree.
+                                  tree[self].need_split = (totnum > MAX_NODESIZE());
+                              });
+                          });
+
+        treecount2.assign(device,
+                          [this](resource<treenode<T, max_multipole>>& tree,
+                                 pair<gpu_uint, gpu_uint> treerange,
+                                 resource<Tuint>& node_memory_request) {
+                              gpu_uint need_child_nodes = 0;
+
+                              // Choosing loop order here in such a way that neighboring nodes in space will also be
+                              // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
+                              // treecount3.
+                              gpu_uint group_begin =
+                                  treerange.first
+                                  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                  * group_id() / num_groups()),
+                                            (gpu_uint)local_size());
+                              gpu_uint group_end =
+                                  treerange.first
+                                  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                  * (group_id() + 1) / num_groups()),
+                                            (gpu_uint)local_size());
+
+                              gpu_for(group_begin, group_end, local_size(), [&](gpu_uint group_self) {
+                                  gpu_uint self = group_self + local_id();
+                                  gpu_bool has_children = tree[self].need_split;
+                                  {
+                                      for (uint si = 0; si < num_surrounding(); ++si)
+                                      {
+                                          gpu_uint cousin = surrounding_link(self, si);
+                                          has_children = has_children || (tree[cousin].need_split);
+                                      }
+                                  }
+                                  // If has_children is true, this node must further be split. Either because force
+                                  // calculation wants to continue in this node, or because it is used by another node
+                                  // in the vicinity.
+                                  tree[self].first_child = (gpu_uint)has_children;
+                                  need_child_nodes += (gpu_uint)has_children;
+                              });
+
+                              need_child_nodes = work_group_reduce_add(need_child_nodes, local_size());
+                              gpu_if(local_id() == 0)
+                              {
+                                  // Writing memory requirements for this workgroup.
+                                  node_memory_request[group_id()] = need_child_nodes;
+                              }
+                          });
+
+        this->node_memory_request.assign(device, treecount2.num_groups());
+
+        treecount3.assign(
             device,
-            [this](resource<treenode<T, max_multipole>>& tree,
-                   gpu_uint treebegin,
-                   gpu_uint treeend,
-                   // const gpu_uint max_super_particles,
-                   resource<Tuint>& blocksums) {
-                array<gpu_bool, treecount_blocksize> has_children_vec;
-                gpu_for(treecount_blocksize * local_size() * group_id(),
-                        treeend - treebegin,
-                        global_size() * treecount_blocksize,
-                        [&](gpu_uint offset) {
-                            gpu_uint sum = 0;
-                            for (unsigned int k = 0; k < treecount_blocksize; ++k)
-                            {
-                                gpu_uint pos = offset + treebegin + local_id() * treecount_blocksize + k;
-                                gpu_bool has_children = false;
-                                gpu_if(pos < treeend)
-                                {
-                                    has_children = tree[pos].need_split;
-                                    gpu_uint totnum = tree[pos].pend - tree[pos].pbegin;
-                                    for (uint si = 0; si < num_surrounding(); ++si)
-                                    {
-                                        gpu_uint cousin = surrounding_link(pos, si);
-                                        totnum += tree[cousin].pend - tree[cousin].pbegin;
-                                        has_children = has_children || (tree[cousin].need_split);
-                                    }
-                                    tree[pos].need_split_child.fill(
-                                        totnum
-                                        > MAX_NODESIZE()); // need_split_children. Temporarily storing in parent index.
-                                                           // FIXME: could adjust this per child separately
-                                }
-                                sum += (gpu_uint)has_children;
-                                has_children_vec[k] = has_children;
-                            }
-                            blocksums[offset / treecount_blocksize + local_id()] = sum * 2;
-                            gpu_uint toffset = 0;
-                            for (Tuint k = 0; k < treecount_blocksize; ++k)
-                            {
-                                gpu_uint pos = offset + treebegin + local_id() * treecount_blocksize + k;
-                                gpu_if(pos < treeend || (k < treecount_blocksize - 1))
-                                {
-                                    tree[pos].first_child = cond(has_children_vec[k], treeend + toffset, 0u);
-                                    toffset += 2 * (gpu_uint)has_children_vec[k];
-                                }
-                            }
-                        });
-            });
+            [this](resource<treenode<T, max_multipole>>& tree, pair<gpu_uint, gpu_uint> treerange) {
+                gpu_uint next_index = this->node_memory_request[group_id()];
 
-        for (unsigned int mod3 = 0; mod3 < 3; ++mod3)
-            treecount3[mod3].assign(
-                device,
-                [mod3, this](resource<treenode<T, max_multipole>>& tree,
-                             const resource<pair<signature_t, Tuint>>& particles,
-                             const resource<Vector<T, 3>>& x,
-                             gpu_uint treeoffset,
-                             gpu_uint treesize,
-                             gpu_uint tree_maxsize,
-                             gpu_uint depth,
-                             gpu_T halflen_sublevel,
-                             const resource<Tuint>& blocksums,
-                             const resource<Tuint>& bigblocksums,
-                             resource<Tuint>& numsub) {
-                    gpu_uint offsetsum = 0;
-                    gpu_for_global(0, treesize, [&](gpu_uint k) {
-                        tree[treeoffset + k].first_child =
-                            cond((tree[treeoffset + k].first_child != 0),
-                                 tree[treeoffset + k].first_child + offsetsum + blocksums[k / treecount_blocksize],
-                                 0u);
-                        treenode<gpu_T, max_multipole> n = tree[treeoffset + k];
+                // Choosing loop order here in such a way that neighboring nodes in space will also be neighboring nodes
+                // in memory. This loop must have the same ordering in treecount2 and treecount3.
+                gpu_uint group_begin = treerange.first
+                                       + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                       * group_id() / num_groups()),
+                                                 (gpu_uint)local_size());
+                gpu_uint group_end = treerange.first
+                                     + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                     * (group_id() + 1) / num_groups()),
+                                               (gpu_uint)local_size());
 
-                        Vector<gpu_T, 3> halflen3 = vdata.make_real({ 1, 1, 1 }, halflen_sublevel * T(pow<1, 3>(2.0)));
+                gpu_for(group_begin, group_end, local_size(), [&](gpu_uint group_self) {
+                    gpu_uint self = group_self + local_id();
+                    gpu_bool have_child = (tree[self].first_child != 0);
 
-                        gpu_bool good = true;
-                        gpu_for(n.pbegin, n.pend, [&](gpu_uint p) {
-                            for (uint k = 0; k < 3; ++k)
-                            {
-                                good = good && (abs((rot(x[p], mod3) - n.rcenter)[k]) < halflen3[k]);
-                            }
-                        });
-
-                        gpu_assert(good);
-
-                        gpu_if(n.first_child != 0)
+                    gpu_uint index;
+                    {
+                        vector<gpu_uint> b = ballot(have_child, local_size());
+                        gpu_uint l = local_id();
+                        for (gpu_uint bt : b)
                         {
-
-                            const gpu_uint end =
-                                find_particle_split(particles, n.pbegin, n.pend, [&](gpu_signature_t id) {
-                                    return ((id & (gpu_signature_t(1u) << depth)) == 0);
-                                });
-
-                            gpu_bool ok = (n.first_child + 1 < tree_maxsize);
-                            gpu_assert(ok);
-                            for (Tuint childnum : { 0, 1 })
-                            {
-                                auto& c = tree[cond(ok, n.first_child + childnum, treeoffset + k)];
-                                Vector<gpu_T, 3> rcenter = n.rcenter;
-                                rcenter[0] += (childnum == 0 ? -halflen_sublevel : halflen_sublevel);
-                                c.rcenter = rot(rcenter);
-                                if (childnum == 0)
-                                {
-                                    c.pbegin = n.pbegin;
-                                    c.pend = end;
-                                }
-                                else
-                                {
-                                    c.pbegin = end;
-                                    c.pend = n.pend;
-                                }
-                                tree[n.first_child + childnum].need_split = n.need_split_child[childnum];
-
-                                c.parent = treeoffset + k;
-                            }
+                            index = cond(l < 32u, next_index + popcount(bt & ((1u << l) - 1)), index);
+                            next_index += popcount(bt);
+                            l -= 32;
                         }
-                        offsetsum += bigblocksums[k / global_size()];
-                    });
-                    gpu_if(global_id() == 0) numsub[0] = offsetsum;
-                },
-                this->treecount2func.local_size(),
-                this->treecount2func.global_size());
+                    }
+
+                    tree[self].first_child = cond(have_child, index * 2, 0u);
+
+                    gpu_if(have_child)
+                    {
+                        for (Tuint childnum : { 0, 1 })
+                        {
+                            tree[tree[self].first_child + childnum].parent = self;
+                        }
+                    }
+                });
+            },
+            this->treecount2.local_size(), // thread numbers must be the same as in treecount2.
+            this->treecount2.global_size());
+
+        treecount4.assign(device,
+                          [this](resource<treenode<T, max_multipole>>& tree,
+                                 const resource<pair<signature_t, Tuint>>& particles,
+                                 pair<gpu_uint, gpu_uint> child_treerange,
+                                 gpu_uint depth,
+                                 gpu_T halflen_sublevel) {
+                              gpu_for_global(child_treerange.first, child_treerange.second, 2, [&](gpu_uint k) {
+                                  gpu_uint parent = tree[k].parent;
+
+                                  const gpu_uint end = find_particle_split(
+                                      particles, tree[parent].pbegin, tree[parent].pend, [&](gpu_signature_t id) {
+                                          return ((id & (gpu_signature_t(1u) << depth)) == 0);
+                                      });
+
+                                  tree[k].pbegin = tree[parent].pbegin;
+                                  tree[k].pend = end;
+                                  tree[k + 1].pbegin = end;
+                                  tree[k + 1].pend = tree[parent].pend;
+
+                                  for (Tuint childnum : { 0, 1 })
+                                  {
+                                      gpu_uint self = k + childnum;
+                                      Vector<gpu_T, 3> rcenter = tree[parent].rcenter;
+                                      rcenter[0] += (childnum == 0 ? -halflen_sublevel : halflen_sublevel);
+                                      tree[self].rcenter = rot(rcenter);
+                                  }
+                              });
+                          });
 
         make_surrounding.assign(device, [this](pair<gpu_uint, gpu_uint> treerange, gpu_T halflen) {
             gpu_for_global(treerange.first, treerange.second, 2, [&](gpu_uint k) {
@@ -1303,7 +1319,7 @@ struct cosmos : public cosmos_base<T>
                                 Vector<gpu_T, 3> halflen3 = vdata.make_real({ 1, 1, 1 }, halflen);
                                 for (uint k = 0; k < 3; ++k)
                                 {
-                                    gpu_assert(abs((rot(x[pa], mod3) - tree[self].rcenter)[k]) < halflen3[k]);
+                                    gpu_assert(abs((rot(x[pa], mod3) - tree[self].rcenter)[k]) < halflen3[k] * 1.001f);
                                 }
 
                                 Vector<gpu_T, 3> F = { 0, 0, 0 };
@@ -1420,7 +1436,7 @@ struct cosmos : public cosmos_base<T>
                         multipole<gpu_T, max_multipole> new_multipole = force_tree[parent].Mr.rot().shift_loc(shiftvec);
 
                         Tuint count = 0;
-                        vector<Vector<Tint, 3>> handled;
+                        set<unsigned int> handled;
                         for (Tuint parent_si = 0; parent_si < num_surrounding() + 1; ++parent_si)
                         {
                             Vector<Tint, 3> unclevec;
@@ -1436,12 +1452,13 @@ struct cosmos : public cosmos_base<T>
                             for (int c2 = 0; c2 < 2; ++c2)
                             {
                                 Vector<Tint, 3> cousinvec = vdata.parent2child(unclevec, c2 - c);
-                                assert(!ranges::contains(handled, cousinvec));
-                                handled.push_back(cousinvec);
-                                cout << "cousinvec=" << cousinvec;
-                                if (!ranges::contains(vdata.local_vec, cousinvec) && cousinvec.squaredNorm() != 0)
+                                assert(!handled.contains(vdata.make_index(cousinvec)));
+                                handled.insert(vdata.make_index(cousinvec));
+                                // cout << "cousinvec=" << cousinvec;
+                                if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
+                                    && cousinvec.squaredNorm() != 0)
                                 {
-                                    cout << ". updating";
+                                    // cout << ". updating";
                                     gpu_uint cousin =
                                         tree[(parent_si == num_surrounding() ? parent
                                                                              : surrounding_link(parent, parent_si))]
@@ -1451,13 +1468,13 @@ struct cosmos : public cosmos_base<T>
                                         tree[cousin].Mr.makelocal(-vdata.make_real(cousinvec, level_halflen * 2));
                                     ++count;
                                 }
-                                cout << endl;
+                                // cout << endl;
                             }
                         }
-                        cout << "downwards2: count=" << count << ", num_surrounding()=" << num_surrounding() << endl;
+                        // cout << "downwards2: count=" << count << ", num_surrounding()=" << num_surrounding() << endl;
                         for (uint si = 0; si < num_surrounding(); ++si)
                         {
-                            assert(ranges::contains(handled, vdata.vicinity_vec[si]));
+                            assert(handled.contains(vdata.make_index(vdata.vicinity_vec[si])));
                         }
 
                         assert(count == num_surrounding() + 1);
