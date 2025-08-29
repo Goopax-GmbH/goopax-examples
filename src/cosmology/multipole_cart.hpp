@@ -198,6 +198,54 @@ struct multipole
         return from_particle({ 0, 0, 0 }, 0);
     }
 
+    multipole scale_ext(T s) const
+    {
+        multipole ret = *this;
+
+        if (N >= 1)
+        {
+            ret.B *= s;
+        }
+        if (N >= 2)
+        {
+            ret.C *= pow2(s);
+        }
+        if (N >= 3)
+        {
+            ret.D *= pow3(s);
+        }
+        if (N >= 4)
+        {
+            ret.E *= pow4(s);
+        }
+        return ret;
+    }
+
+    multipole scale_loc(T s) const
+    {
+        T inv_s = 1.f / s;
+        multipole ret = *this;
+
+        ret.A *= inv_s;
+        if (N >= 1)
+        {
+            ret.B *= pow2(inv_s);
+        }
+        if (N >= 2)
+        {
+            ret.C *= pow3(inv_s);
+        }
+        if (N >= 3)
+        {
+            ret.D *= pow4(inv_s);
+        }
+        if (N >= 4)
+        {
+            ret.E *= pow5(inv_s);
+        }
+        return ret;
+    }
+
     multipole shift_ext(Vector<T, 3> aa) const
     {
         multipole M = *this;

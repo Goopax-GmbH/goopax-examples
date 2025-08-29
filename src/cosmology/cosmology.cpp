@@ -143,7 +143,7 @@ PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.2);
 
 PARAMOPT<bool> PRECISION_TEST("precision_test", false);
 
-constexpr unsigned int MULTIPOLE_ORDER = 4;
+constexpr unsigned int MULTIPOLE_ORDER = 2;
 
 using GPU_DOUBLE = gpu_double;
 using TDOUBLE = Tdouble;
@@ -822,20 +822,14 @@ struct cosmos : public cosmos_base<T>
                             const buffer<T>& massvec,
                             Tuint treebegin,
                             Tuint treeend,
-                            T level_halflen)>,
+                            T scale)>,
                 2>,
           3>
         upwards;
 
-    kernel<void(pair<Tuint, Tuint> treerange, T level_halflen)> downwards2;
+    kernel<void(pair<Tuint, Tuint> treerange)> downwards2;
 
-    array<
-        kernel<void(
-            pair<Tuint, Tuint> treerange, const buffer<Vector<T, 3>>& xvec, const buffer<T>& massvec, T level_halflen)>,
-        3>
-        multipole_test;
-
-    array<kernel<void(const buffer<Vector<T, 3>>& x, buffer<Vector<T, 3>>& v, pair<Tuint, Tuint> treerange, T halflen)>,
+    array<kernel<void(const buffer<Vector<T, 3>>& x, buffer<Vector<T, 3>>& v, pair<Tuint, Tuint> treerange, T scale)>,
           3>
         handle_particles;
 
@@ -860,19 +854,22 @@ struct cosmos : public cosmos_base<T>
         auto t0 = steady_clock::now();
 #endif
 
-        auto print = [&](auto& tree, pair<Tuint, Tuint> treerange) {
-            const_buffer_map map(tree);
-            const_buffer_map surrounding(surrounding_buf);
-            for (uint k = treerange.first; k < treerange.second; ++k)
-            {
-                cout << k << ": " << map[k] << ". surrounding:";
-                for (uint s = 0; s < num_surrounding(); ++s)
+        /*
+          auto print = [&](auto& tree, pair<Tuint, Tuint> treerange) {
+                const_buffer_map map(tree);
+                const_buffer_map matter(matter_tree);
+                const_buffer_map surrounding(surrounding_buf);
+                for (uint k = treerange.first; k < treerange.second; ++k)
                 {
-                    cout << " " << surrounding[k * num_surrounding() + s];
+                    cout << k << ": " << map[k] << ". matter: " << matter[k] << ". surrounding:";
+                    for (uint s = 0; s < num_surrounding(); ++s)
+                    {
+                        cout << " " << surrounding[k * num_surrounding() + s];
+                    }
+                    cout << endl;
                 }
-                cout << endl;
-            }
-        };
+            };
+        */
 
         {
             // tree.copy(fill3, 3, 0, 0);
@@ -984,14 +981,15 @@ struct cosmos : public cosmos_base<T>
 
         {
             Tdouble level_halflen = halflen * pow(2.0, -1.0 / 3 * treeranges.size());
+            Tdouble scale = 1.0 / level_halflen;
+
             for (Tuint depth = treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
                 upwards[modulo((int)depth, 3)][depth == treeranges.size() - 1](
-                    tree, x, mass, treeranges[depth].first, treeranges[depth].second, level_halflen);
-                level_halflen *= pow(2.0, 1.0 / 3);
+                    tree, x, mass, treeranges[depth].first, treeranges[depth].second, scale)
+                    .wait();
 
-                // cout << "depth=" << depth << ": after upwards:\n";
-                // print(tree, treerange[depth]);
+                scale *= pow<-1, 3>(2.0);
             }
         }
 
@@ -1012,15 +1010,24 @@ struct cosmos : public cosmos_base<T>
 
         {
             double level_halflen = halflen;
+
+            Tdouble scale = 1.0 / level_halflen * pow<1, 3>(2.0);
+
             for (uint depth = 1; depth < treeranges.size(); ++depth)
             {
+                scale *= pow<1, 3>(2.0);
+
                 level_halflen *= pow(2.0, -1.0 / 3);
-                downwards2(treeranges[depth], level_halflen).wait();
+
+                // cout << "downwardsd. depth=" << depth << ", scale=" << scale << ", level_halflen=" << level_halflen
+                //<< endl;
+
+                downwards2(treeranges[depth]).wait();
 
                 // cout << "depth=" << depth << ": after downwards:\n";
                 // print(force_tree, treerange[depth]);
 
-                handle_particles[modulo((int)depth, 3)](x, v, treeranges[depth], level_halflen).wait();
+                handle_particles[modulo((int)depth, 3)](x, v, treeranges[depth], scale).wait();
 
                 // cout << "depth=" << depth << ": after handle_particles:\n";
                 // print(force_tree, treerange[depth]);
@@ -1252,7 +1259,7 @@ struct cosmos : public cosmos_base<T>
                                             const resource<T>& massvec,
                                             gpu_uint treebegin,
                                             gpu_uint treeend,
-                                            gpu_T level_halflen) {
+                                            gpu_T scale) {
                         gpu_for_global(treebegin, treeend, [&](gpu_uint t) {
                             const gpu_bool is_pnode = (is_bottom || tree[t].first_child == 0);
 
@@ -1260,15 +1267,22 @@ struct cosmos : public cosmos_base<T>
 
                             gpu_for(tree[t].pbegin, cond(is_pnode, tree[t].pend, tree[t].pbegin), [&](gpu_uint p) {
                                 Msum_r += multipole<gpu_T, max_multipole>::from_particle(
-                                    rot(xvec[p], mod3) - tree[t].rcenter, massvec[p]);
+                                    (rot(xvec[p], mod3) - tree[t].rcenter) * scale, massvec[p]);
                             });
-                            gpu_for(0, cond(is_pnode, 0u, 2u), [&](gpu_uint child) {
-                                const gpu_uint child_id = tree[t].first_child + child;
-                                const multipole<gpu_T, max_multipole> Mcr = matter_tree[child_id];
-                                Vector<gpu_T, 3> shift_r = { level_halflen * (1 - gpu_int(2 * child)), 0, 0 };
-                                multipole<gpu_T, max_multipole> Mr = Mcr.rot(-1).shift_ext(shift_r);
-                                Msum_r += Mr;
-                            });
+
+                            gpu_if(!is_pnode)
+                            {
+                                for (uint child = 0; child < 2; ++child)
+                                {
+                                    const gpu_uint child_id = tree[t].first_child + child;
+                                    const multipole<gpu_T, max_multipole> Mcr = matter_tree[child_id];
+                                    Vector<int, 3> shift_r = { (1 - (2 * child)), 0, 0 };
+                                    multipole<gpu_T, max_multipole> Mr = Mcr.rot(-1)
+                                                                             .scale_ext(pow<-1, 3>(2.0))
+                                                                             .shift_ext(shift_r.template cast<gpu_T>());
+                                    Msum_r += Mr;
+                                }
+                            }
 
                             matter_tree[t] = Msum_r;
                         });
@@ -1279,8 +1293,7 @@ struct cosmos : public cosmos_base<T>
                 [mod3, this](const resource<Vector<T, 3>>& x,
                              resource<Vector<T, 3>>& v,
                              pair<gpu_uint, gpu_uint> treerange,
-                             gpu_T level_halflen) {
-                    (void)level_halflen;
+                             gpu_T scale) {
                     gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
                         gpu_if(!tree[self].need_split && tree[tree[self].parent].need_split)
                         {
@@ -1319,79 +1332,26 @@ struct cosmos : public cosmos_base<T>
                                     }
                                 });
 
-                                F += rot(force_tree[self].calc_force(rot(x[pa], mod3) - tree[self].rcenter),
-                                         -(Tint)mod3);
+                                F += rot(force_tree[self].calc_force((rot(x[pa], mod3) - tree[self].rcenter) * scale),
+                                         -(Tint)mod3)
+                                     * pow2(scale);
 #if CALC_POTENTIAL
-                                P += force_tree[self].calc_loc_potential(rot(x[pa], mod3) - tree[self].rcenter);
+                                P +=
+                                    force_tree[self].calc_loc_potential((rot(x[pa], mod3) - tree[self].rcenter) * scale)
+                                    * scale;
 #endif
 
                                 v[pa] += F * (gpu_T)DT();
 #if CALC_POTENTIAL
                                 potential[pa] = P;
 #endif
-
-                                gpu_assert(isfinite(F.squaredNorm()));
-                                gpu_assert(isfinite(P));
-
-                                {
-                                    Vector<gpu_T, 3> Ftest = zero;
-                                    gpu_T Ptest = 0;
-
-                                    multipole<gpu_T, max_multipole> Mtest = zero;
-
-                                    gpu_for(treerange.first, treerange.second, [&](gpu_uint i) {
-                                        gpu_bool have = (self == i);
-                                        gpu_for(0, num_surrounding(), [&](gpu_uint si) {
-                                            have = have || (i == surrounding_link(self, si));
-                                        });
-                                        gpu_if(!have)
-                                        {
-                                            Vector<gpu_T, 3> Fnode = zero;
-                                            gpu_T Pnode = 0;
-                                            gpu_for(tree[i].pbegin, tree[i].pend, [&](gpu_uint p) {
-                                                const Vector<gpu_T, 3> dist = x[p] - x[pa];
-                                                Fnode += dist
-                                                         * (mass[p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
-                                                            * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
-                                                Pnode += -(mass[p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f));
-                                            });
-
-                                            auto M = matter_tree[i].makelocal(rot(x[pa], mod3) - tree[i].rcenter);
-                                            auto Mc = matter_tree[i].makelocal(tree[self].rcenter - tree[i].rcenter);
-                                            Mtest += Mc;
-
-                                            Ftest += Fnode;
-                                            Ptest += Pnode;
-                                        }
-                                    });
-
-                                    Vector<gpu_T, 3> Ftest2 = zero;
-                                    gpu_T Ptest2 = 0;
-
-                                    gpu_for(tree[3].pbegin, tree[3].pend, [&](gpu_uint p) {
-                                        gpu_bool have = (p >= tree[self].pbegin && p < tree[self].pend);
-                                        gpu_for(0, num_surrounding(), [&](gpu_uint si) {
-                                            have = have
-                                                   || (p >= tree[surrounding_link(self, si)].pbegin
-                                                       && p < tree[surrounding_link(self, si)].pend);
-                                        });
-                                        gpu_if(!have)
-                                        {
-                                            const Vector<gpu_T, 3> dist = x[p] - x[pa];
-                                            Ftest2 += dist
-                                                      * (mass[p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
-                                                         * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
-                                            Ptest2 += -(mass[p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f));
-                                        }
-                                    });
-                                }
                             });
                         }
                     });
                 });
         }
 
-        downwards2.assign(device, [this](pair<gpu_uint, gpu_uint> treerange, gpu_T level_halflen) {
+        downwards2.assign(device, [this](pair<gpu_uint, gpu_uint> treerange) {
             gpu_assert((treerange.second - treerange.first) % 2 == 0);
 
             gpu_for_global(treerange.first, treerange.second, 2, [&](gpu_uint k) {
@@ -1401,9 +1361,10 @@ struct cosmos : public cosmos_base<T>
                 {
                     for (int c = 0; c < 2; ++c)
                     {
-                        Vector<gpu_T, 3> shiftvec = { 0, 0, level_halflen * (2 * c - 1) };
+                        Vector<gpu_T, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
                         gpu_uint self = k + c;
-                        multipole<gpu_T, max_multipole> new_multipole = force_tree[parent].rot().shift_loc(shiftvec);
+                        multipole<gpu_T, max_multipole> new_multipole =
+                            force_tree[parent].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
 
                         Tuint count = 0;
                         set<unsigned int> handled;
@@ -1434,14 +1395,13 @@ struct cosmos : public cosmos_base<T>
                                                                              : surrounding_link(parent, parent_si))]
                                             .first_child
                                         + c2;
-                                    new_multipole +=
-                                        matter_tree[cousin].makelocal(-vdata.make_real(cousinvec, level_halflen * 2));
+                                    new_multipole += matter_tree[cousin].makelocal(
+                                        (-vdata.make_real(cousinvec, 2 * pow<1, 3>(2.0))).template cast<gpu_T>());
                                     ++count;
                                 }
                                 // cout << endl;
                             }
                         }
-                        // cout << "downwards2: count=" << count << ", num_surrounding()=" << num_surrounding() << endl;
                         for (uint si = 0; si < num_surrounding(); ++si)
                         {
                             assert(handled.contains(vdata.make_index(vdata.vicinity_vec[si])));
@@ -1449,108 +1409,16 @@ struct cosmos : public cosmos_base<T>
 
                         assert(count == num_surrounding() + 1);
 
-                        gpu_assert(isfinite(new_multipole.B[0]));
                         force_tree[self] = new_multipole;
                     }
                 }
             });
         });
-
-        for (unsigned int mod3 = 0; mod3 < 3; ++mod3)
-        {
-            multipole_test[mod3].assign(
-                device,
-                [this, mod3](pair<gpu_uint, gpu_uint> treerange,
-                             const resource<Vector<T, 3>>& xvec,
-                             const resource<T>& massvec,
-                             gpu_T level_halflen) {
-                    (void)level_halflen;
-                    gpu_for_global(treerange.first, treerange.second, [&](gpu_uint k) {
-                        gpu_ostream DUMP(cout);
-
-                        gpu_uint parent = tree[k].parent;
-
-                        DUMP << "multipole_test. tree[" << k << "]=" << tree[k];
-
-                        {
-                            multipole<gpu_T, max_multipole> new_multipole = zero;
-                            gpu_for(tree[k].pbegin, tree[k].pend, [&](gpu_uint p) {
-                                new_multipole += multipole<gpu_T, max_multipole>::from_particle(
-                                    rot(xvec[p], mod3) - tree[k].rcenter, massvec[p]);
-                            });
-
-                            DUMP << "\nMr=" << matter_tree[k] << "ist=" << new_multipole;
-                        }
-
-                        {
-                            multipole<gpu_T, max_multipole> new_multipole = zero;
-                            multipole<gpu_T, max_multipole> new_multipole2 = zero;
-
-                            gpu_for(treerange.first, treerange.second, [&](gpu_uint i) {
-                                gpu_bool have = (k == i);
-                                gpu_for(0, num_surrounding(), [&](gpu_uint si) {
-                                    have = have || (i == surrounding_link(k, si));
-                                });
-                                gpu_if(!have)
-                                {
-                                    gpu_for(tree[i].pbegin, tree[i].pend, [&](gpu_uint p) {
-                                        new_multipole +=
-                                            multipole<gpu_T, max_multipole>::from_particle({ 0, 0, 0 }, mass[p])
-                                                .makelocal(tree[k].rcenter - rot(xvec[p], mod3));
-                                    });
-
-                                    new_multipole2 += matter_tree[i].makelocal(tree[k].rcenter - tree[i].rcenter);
-                                }
-                            });
-                            DUMP << "\nforce: Mr=" << force_tree[k] << ", ist=" << new_multipole
-                                 << ", ist2=" << new_multipole2 << "\n";
-                        }
-                    });
-                });
-        }
     }
 };
 
-/*
-  void test(Vector<Tdouble, 3> my_center, Vector<Tdouble, 3> other_center, Vector<Tdouble, 3> px, Vector<Tdouble, 3> r)
-{
-  constexpr uint max_multipole = 2;
-
-  cout << "\ntest. my_center=" << my_center
-       << ", other_center=" << other_center
-       << ", px=" << px
-       << ", r=" << r
-       << endl;
-  multipole<Tdouble, max_multipole> Mr = multipole<Tdouble, max_multipole>::from_particle(px - other_center, 1);
-  multipole<Tdouble, max_multipole> Mf = Mr.makelocal(my_center - other_center);
-  multipole<Tdouble, max_multipole> Mf2 = Mf.shift_loc(-my_center);
-
-  const Vector<Tdouble, 3> dist = px - r;
-  //cout << "dist=" << dist << endl;
-
-  cout //<< "Mr=" << Mr << endl
-       //<< "Mf=" << Mf << endl
-       << "P:  ist=" << -pow<-1, 2>(dist.squaredNorm())
-       << ", soll=" << Mf2.calc_loc_potential(r) << endl
-       << "F: ist=" << dist * pow<-1, 2>(dist.squaredNorm()) * pow2(pow<-1, 2>(dist.squaredNorm()))
-       << ", soll=" << Mf2.calc_force(r) << endl
-       << endl;
-}
-*/
-
 int main(int argc, char** argv)
 {
-    /*
-      test({0,0,0}, {2,0,1}, {2.1,-0.2,0.97}, {-0.12,0.03,0.09});
-      test({0.1,0,0}, {2,0,1}, {2.1,-0.2,0.97}, {-0.12,0.03,0.09});
-      test({0,-0.1,0}, {2,0,1}, {2.1,-0.2,0.97}, {-0.12,0.03,0.09});
-      test({0,0,0.1}, {2,0,1}, {2.1,-0.2,0.97}, {-0.12,0.03,0.09});
-      test({0.21/2,-0.12/2,0.11/2}, {2,0,1}, {1.95,0.1,1.015}, {0.06,-0.015,-0.045});
-      test({-0.21/2,0.12/2,-0.11/2}, {2,0,1}, {2.05,-0.1,0.985}, {-0.06,0.015,0.045});
-      test({0.21,-0.12,0.11}, {2,0,1}, {1.9,0.2,1.03}, {0.12,-0.03,-0.09});
-      test({-0.21,0.12,-0.11}, {2,0,1}, {2.1,-0.2,0.97}, {-0.12,0.03,0.09});
-      exit(0);
-    */
     init_params(argc, argv);
 
     unique_ptr<sdl_window> window = sdl_window::create("fmm nbody",
