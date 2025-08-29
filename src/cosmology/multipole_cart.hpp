@@ -57,7 +57,7 @@ struct multipole
     using T1 = T;
     using T2 = T;
     using T3 = T;
-    using T4 = T;
+    using T4 = Tbf16;
 
     T A;
     Vector<T1, 3 * (N >= 1)> B;
@@ -101,13 +101,15 @@ struct multipole
     }
 
     template<class U>
-    multipole(const multipole<U, N>& b)
-        : A(b.A)
+    multipole<U, N> cast() const
     {
-        std::copy(b.B.begin(), b.B.end(), B.begin());
-        std::copy(b.C.begin(), b.C.end(), C.begin());
-        std::copy(b.D.begin(), b.D.end(), D.begin());
-        std::copy(b.E.begin(), b.E.end(), E.begin());
+        multipole<U, N> ret;
+        ret.A = static_cast<U>(A);
+        ret.B = B.template cast<U>();
+        ret.C = C.template cast<U>();
+        ret.D = D.template cast<U>();
+        ret.E = E.template cast<U>();
+        return ret;
     }
 
     multipole()
@@ -152,7 +154,9 @@ struct multipole
             for (Tuint i = 0; i < 3; ++i)
                 for (Tuint k = i; k < 3; ++k)
                 {
-                    M.C[MI2[i][k]] = (-mass) * (1.5f * a[i] * a[k] - 0.5f * int(i == k) * a.squaredNorm());
+                    M.C[MI2[i][k]] =
+                        (-mass)
+                        * (static_cast<T2>(1.5f) * a[i] * a[k] - static_cast<T2>(0.5f) * int(i == k) * a.squaredNorm());
                 }
         }
         if (N >= 3)
@@ -164,9 +168,9 @@ struct multipole
                     for (Tuint l = k; l < 3; ++l)
                     {
                         M.D[MI3[i][k][l]] =
-                            (-mass)
-                            * (2.5f * a[i] * a[k] * a[l]
-                               - 0.5f * a.squaredNorm()
+                            static_cast<T3>(-mass)
+                            * (static_cast<T3>(2.5f) * a[i] * a[k] * a[l]
+                               - static_cast<T3>(0.5f) * a.squaredNorm()
                                      * (a[i] * Tint(k == l) + a[k] * Tint(i == l) + a[l] * Tint(i == k)));
                     }
         }
@@ -212,11 +216,11 @@ struct multipole
         }
         if (N >= 3)
         {
-            ret.D *= pow3(s);
+            ret.D *= static_cast<T3>(pow3(s));
         }
         if (N >= 4)
         {
-            ret.E *= pow4(s);
+            ret.E *= static_cast<T4>(pow4(s));
         }
         return ret;
     }
@@ -237,11 +241,11 @@ struct multipole
         }
         if (N >= 3)
         {
-            ret.D *= pow4(inv_s);
+            ret.D *= static_cast<T3>(pow4(inv_s));
         }
         if (N >= 4)
         {
-            ret.E *= pow5(inv_s);
+            ret.E *= static_cast<T4>(pow5(inv_s));
         }
         return ret;
     }
@@ -262,8 +266,9 @@ struct multipole
             for (Tuint i = 0; i < 3; ++i)
                 for (Tuint k = i; k < 3; ++k)
                 {
-                    M.C[MI2[i][k]] += 1.5f * a[i] * a[k] * A - 0.5f * A * a.squaredNorm() * Tint(i == k)
-                                      + 1.5f * (B[i] * a[k] + B[k] * a[i]);
+                    M.C[MI2[i][k]] += static_cast<T2>(1.5f) * a[i] * a[k] * A
+                                      - static_cast<T2>(0.5f) * A * a.squaredNorm() * Tint(i == k)
+                                      + static_cast<T2>(1.5f) * (B[i] * a[k] + B[k] * a[i]);
                     for (Tuint n = 0; n < 3; ++n)
                     {
                         M.C[MI2[i][k]] += -B[n] * a[n] * Tint(i == k);
@@ -273,23 +278,27 @@ struct multipole
         if (N >= 3)
         {
             const Vector<T3, 3> a = aa.template cast<T3>();
+            const T3 A = static_cast<T3>(this->A);
+            const Vector<T3, 3 * (N >= 1)> B = this->B.template cast<T3>();
+            const Vector<T3, 6 * (N >= 2)> C = this->C.template cast<T3>();
 
             for (Tuint i = 0; i < 3; ++i)
                 for (Tuint k = i; k < 3; ++k)
                     for (Tuint l = k; l < 3; ++l)
                     {
-                        M.D[MI3[i][k][l]] += 2.5f * A * a[i] * a[k] * a[l]
-                                             - 0.5f * A * a.squaredNorm()
-                                                   * (a[i] * Tint(k == l) + a[k] * Tint(i == l) + a[l] * Tint(i == k))
-                                             + static_cast<T>(5.0 / 3)
-                                                   * (C[MI2[i][k]] * a[l] + C[MI2[i][l]] * a[k] + C[MI2[k][l]] * a[i])
-                                             + 5.0f / 2 * (B[i] * a[k] * a[l] + B[k] * a[i] * a[l] + B[l] * a[i] * a[k])
-                                             - 1.0f / 2 * a.squaredNorm()
-                                                   * (B[i] * Tint(k == l) + B[k] * Tint(i == l) + B[l] * Tint(i == k));
+                        M.D[MI3[i][k][l]] +=
+                            static_cast<T3>(2.5f) * A * a[i] * a[k] * a[l]
+                            - static_cast<T3>(0.5f) * A * a.squaredNorm()
+                                  * (a[i] * Tint(k == l) + a[k] * Tint(i == l) + a[l] * Tint(i == k))
+                            + static_cast<T3>(5.0 / 3)
+                                  * (C[MI2[i][k]] * a[l] + C[MI2[i][l]] * a[k] + C[MI2[k][l]] * a[i])
+                            + static_cast<T3>(5.0f / 2) * (B[i] * a[k] * a[l] + B[k] * a[i] * a[l] + B[l] * a[i] * a[k])
+                            - static_cast<T3>(1.0f / 2) * a.squaredNorm()
+                                  * (B[i] * Tint(k == l) + B[k] * Tint(i == l) + B[l] * Tint(i == k));
                         for (Tuint n = 0; n < 3; ++n)
                         {
                             M.D[MI3[i][k][l]] +=
-                                -static_cast<T>(2.0 / 3) * a[n]
+                                -static_cast<T3>(2.0 / 3) * a[n]
                                     * (C[MI2[n][k]] * Tint(i == l) + C[MI2[n][i]] * Tint(k == l)
                                        + C[MI2[n][l]] * Tint(i == k))
                                 - a[n] * B[n] * (a[i] * Tint(k == l) + a[k] * Tint(i == l) + a[l] * Tint(i == k));
@@ -413,7 +422,7 @@ struct multipole
                             if (i <= k)
                                 M.C[MI2[i][k]] += 6 * E[MI4[i][k][l][m]] * a[l] * a[m];
                             if (i <= k && k <= l)
-                                M.D[MI3[i][k][l]] += 4 * E[MI4[i][k][l][m]] * a[m];
+                                M.D[MI3[i][k][l]] += 4 * E[MI4[i][k][l][m]] * static_cast<T3>(a[m]);
                         }
         }
         return M;
@@ -442,7 +451,9 @@ struct multipole
                 for (Tuint k = 0; k < 3; ++k)
                 {
                     if (i <= k)
-                        M.C[MI2[i][k]] = pow3(inva) * (1.5f * A * e[i] * e[k] - 0.5f * A * Tint(i == k));
+                        M.C[MI2[i][k]] =
+                            pow3(inva)
+                            * (static_cast<T2>(1.5f) * A * e[i] * e[k] - static_cast<T2>(0.5f) * A * Tint(i == k));
                     M.B[i] += pow3(inva) * (-3 * B[k] * e[k] * e[i]);
                     M.A += pow3(inva) * C[MI2[i][k]] * e[i] * e[k];
                 }
@@ -458,24 +469,30 @@ struct multipole
                     for (Tuint l = 0; l < 3; ++l)
                     {
                         if (i <= k && k <= l)
+                        {
+                            const T3 A = static_cast<T3>(this->A);
+                            const Vector<T3, 3> e = (a * inva).template cast<T3>();
+
                             M.D[MI3[i][k][l]] =
-                                pow4(inva)
-                                * (-5.0f / 2 * A * e[i] * e[k] * e[l]
-                                   + 0.5f * A * (e[i] * Tint(k == l) + e[k] * Tint(i == l) + e[l] * Tint(i == k)));
+                                static_cast<T3>(pow4(inva))
+                                * (static_cast<T3>(-5.0f / 2) * A * e[i] * e[k] * e[l]
+                                   + static_cast<T3>(0.5f) * A
+                                         * (e[i] * Tint(k == l) + e[k] * Tint(i == l) + e[l] * Tint(i == k)));
+                        }
                         if (i <= k)
-                            M.C[MI2[i][k]] +=
-                                pow4(inva)
-                                * (15.0f / 2 * B[l] * e[l] * e[i] * e[k] - 1.5f * B[l] * e[l] * Tint(i == k));
+                            M.C[MI2[i][k]] += pow4(inva)
+                                              * (static_cast<T2>(15.0f / 2) * B[l] * e[l] * e[i] * e[k]
+                                                 - static_cast<T2>(1.5f) * B[l] * e[l] * Tint(i == k));
                         M.B[i] += pow4(inva) * (-5 * C[MI2[k][l]] * e[k] * e[l] * e[i]);
                         M.A += pow4(inva) * (D[MI3[i][k][l]] * e[i] * e[k] * e[l]);
                     }
                     if (i <= k)
-                        M.C[MI2[i][k]] += pow4(inva) * (-1.5f * (B[i] * e[k] + B[k] * e[i]));
+                        M.C[MI2[i][k]] += pow4(inva) * (-static_cast<T2>(1.5f) * (B[i] * e[k] + B[k] * e[i]));
                     M.B[i] += pow4(inva) * 2 * C[MI2[i][k]] * e[k];
                 }
             }
         }
-        if (N >= 4)
+        if constexpr (N >= 4)
         {
             for (Tuint i = 0; i < 3; ++i)
             {
@@ -501,23 +518,37 @@ struct multipole
                                                 + e[k] * e[m] * Tint(i == l) + e[l] * e[m] * Tint(i == k)));
                             }
                             if (i <= k && k <= l)
+                            {
+                                const Vector<T3, 3> e = (a * inva).template cast<T3>();
+                                const T3 A = static_cast<T3>(this->A);
+                                const Vector<T3, 3 * (N >= 1)> B = this->B.template cast<T3>();
+
                                 M.D[MI3[i][k][l]] +=
-                                    pow5(inva)
-                                    * (-35.0f / 2 * B[m] * e[m] * e[i] * e[k] * e[l]
-                                       + 5.0f / 2 * B[m] * e[m]
+                                    static_cast<T3>(pow5(inva))
+                                    * (static_cast<T3>(-35.0f / 2) * B[m] * e[m] * e[i] * e[k] * e[l]
+                                       + static_cast<T3>(5.0f / 2) * B[m] * e[m]
                                              * (e[i] * Tint(k == l) + e[k] * Tint(i == l) + e[l] * Tint(i == k)));
+                            }
                             if (i <= k)
-                                M.C[MI2[i][k]] += pow5(inva)
-                                                  * (35.0f / 2 * C[MI2[l][m]] * e[l] * e[m] * e[i] * e[k]
-                                                     - 5.0f / 2 * C[MI2[l][m]] * e[l] * e[m] * Tint(i == k));
+                                M.C[MI2[i][k]] +=
+                                    pow5(inva)
+                                    * (static_cast<T2>(35.0f / 2) * C[MI2[l][m]] * e[l] * e[m] * e[i] * e[k]
+                                       - static_cast<T2>(5.0f / 2) * C[MI2[l][m]] * e[l] * e[m] * Tint(i == k));
                             M.B[i] += pow5(inva) * (-7 * D[MI3[k][l][m]] * e[k] * e[l] * e[m] * e[i]);
                             M.A += pow5(inva) * (E[MI4[i][k][l][m]] * e[i] * e[k] * e[l] * e[m]);
                         }
                         if (i <= k && k <= l)
+                        {
+                            const Vector<T3, 3> e = (a * inva).template cast<T3>();
+                            const T3 A = static_cast<T3>(this->A);
+                            const Vector<T3, 3> B = this->B.template cast<T3>();
                             M.D[MI3[i][k][l]] +=
-                                pow5(inva)
-                                * (+5.0f / 2 * (B[i] * e[k] * e[l] + B[k] * e[i] * e[l] + B[l] * e[i] * e[k])
-                                   - 0.5f * (B[i] * Tint(k == l) + B[k] * Tint(i == l) + B[l] * Tint(i == k)));
+                                static_cast<T3>(pow5(inva))
+                                * (static_cast<T3>(+5.0f / 2)
+                                       * (B[i] * e[k] * e[l] + B[k] * e[i] * e[l] + B[l] * e[i] * e[k])
+                                   - static_cast<T3>(0.5f)
+                                         * (B[i] * Tint(k == l) + B[k] * Tint(i == l) + B[l] * Tint(i == k)));
+                        }
                         if (i <= k)
                             M.C[MI2[i][k]] += pow5(inva) * (-5 * e[l] * (C[MI2[l][k]] * e[i] + C[MI2[l][i]] * e[k]));
                         M.B[i] += pow5(inva) * 3 * D[MI3[i][k][l]] * e[k] * e[l];
