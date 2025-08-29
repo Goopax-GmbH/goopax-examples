@@ -177,12 +177,12 @@ Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)
     return rot(Vector<T, 3>({ a[1], a[2], a[0] }), step - 1);
 }
 
-template<class T, unsigned int max_multipole>
+template<class T>
 struct treenode
 {
     using goopax_struct_type = T;
     template<typename X>
-    using goopax_struct_changetype = treenode<typename goopax_struct_changetype<T, X>::type, max_multipole>;
+    using goopax_struct_changetype = treenode<typename goopax_struct_changetype<T, X>::type>;
     using uint_type = typename change_gpu_mode<unsigned int, T>::type;
     using bool_type = typename change_gpu_mode<bool, T>::type;
 
@@ -191,7 +191,6 @@ struct treenode
     uint_type pbegin;
     uint_type pend;
     // uint_type parent;
-    multipole<T, max_multipole> Mr;
     Vector<T, 3> rcenter;
     bool_type need_split;
 
@@ -199,25 +198,7 @@ struct treenode
     friend STREAM& operator<<(STREAM& s, const treenode& n)
     {
         s << "[first_child=" << n.first_child << ", parent=" << n.parent << ", pbegin=" << n.pbegin
-          << ", pend=" << n.pend << ", rcenter=" << n.rcenter << ", split=" << n.need_split << ", Mr=" << n.Mr << "]";
-        return s;
-    }
-};
-
-template<class T, unsigned int max_multipole>
-struct force_treenode
-{
-    using goopax_struct_type = T;
-    template<typename X>
-    using goopax_struct_changetype = force_treenode<typename goopax_struct_changetype<T, X>::type, max_multipole>;
-    using uint_type = typename change_gpu_mode<unsigned int, T>::type;
-
-    multipole<T, max_multipole> Mr;
-
-    template<class STREAM>
-    friend STREAM& operator<<(STREAM& s, const force_treenode& n)
-    {
-        s << "[Mr=" << n.Mr << "]";
+          << ", pend=" << n.pend << ", rcenter=" << n.rcenter << ", split=" << n.need_split;
         return s;
     }
 };
@@ -802,8 +783,9 @@ struct cosmos : public cosmos_base<T>
     using cosmos_base<T>::tmp;
     using cosmos_base<T>::tmps;
 
-    buffer<treenode<T, max_multipole>> tree;
-    buffer<force_treenode<T, max_multipole>> force_tree;
+    buffer<treenode<T>> tree;
+    buffer<multipole<T, max_multipole>> matter_tree;
+    buffer<multipole<T, max_multipole>> force_tree;
     buffer<Tuint> surrounding_buf;
     // buffer<Tuint> undone_uncles;
     unsigned int num_surrounding()
@@ -819,15 +801,14 @@ struct cosmos : public cosmos_base<T>
 
     // buffer<treenode<T, max_multipole>> fill3;
 
-    kernel<void(buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange)> treecount1;
+    kernel<void(buffer<treenode<T>>& tree, pair<Tuint, Tuint> treerange)> treecount1;
 
-    kernel<void(
-        buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange, buffer<Tuint>& node_memory_request)>
+    kernel<void(buffer<treenode<T>>& tree, pair<Tuint, Tuint> treerange, buffer<Tuint>& node_memory_request)>
         treecount2;
 
-    kernel<void(buffer<treenode<T, max_multipole>>& tree, pair<Tuint, Tuint> treerange)> treecount3;
+    kernel<void(buffer<treenode<T>>& tree, pair<Tuint, Tuint> treerange)> treecount3;
 
-    kernel<void(buffer<treenode<T, max_multipole>>& tree,
+    kernel<void(buffer<treenode<T>>& tree,
                 const buffer<pair<signature_t, Tuint>>& particles,
                 pair<Tuint, Tuint> child_treerange,
                 Tuint depth,
@@ -836,7 +817,7 @@ struct cosmos : public cosmos_base<T>
 
     kernel<void(pair<Tuint, Tuint> treerange, T halflen)> make_surrounding;
 
-    array<array<kernel<void(buffer<treenode<T, max_multipole>>& tree,
+    array<array<kernel<void(buffer<treenode<T>>& tree,
                             const buffer<Vector<T, 3>>& xvec,
                             const buffer<T>& massvec,
                             Tuint treebegin,
@@ -925,16 +906,10 @@ struct cosmos : public cosmos_base<T>
 
                 // treecount2 and treecount3 might overshoot and handle nodes behind the end. This makes sure they
                 // behave correctly.
-                tree.fill({ .first_child = {},
-                            .parent = {},
-                            .pbegin = {},
-                            .pend = {},
-                            .Mr = {},
-                            .rcenter = {},
-                            .need_split = false },
-                          treerange.second,
-                          treerange.first
-                              + intceil(treerange.second - treerange.first, (Tuint)treecount1.local_size()));
+                tree.fill(
+                    { .first_child = {}, .parent = {}, .pbegin = {}, .pend = {}, .rcenter = {}, .need_split = false },
+                    treerange.second,
+                    treerange.first + intceil(treerange.second - treerange.first, (Tuint)treecount1.local_size()));
 
                 surrounding_buf.fill(
                     0,
@@ -1068,90 +1043,85 @@ struct cosmos : public cosmos_base<T>
     cosmos(goopax_device device, Tsize_t N, Tdouble max_distfac)
         : cosmos_base<T>(device, N, max_distfac)
         , tree(device, this->treesize)
+        , matter_tree(device, this->treesize)
         , force_tree(device, this->treesize)
         , surrounding_buf(device, this->treesize * num_surrounding())
     {
-        tree.fill({ .first_child = 0,
-                    .parent = 0,
-                    .pbegin = 0,
-                    .pend = 0,
-                    .Mr = zero,
-                    .rcenter = { 0, 0, 0 },
-                    .need_split = false },
-                  0,
-                  4);
+        tree.fill(
+            { .first_child = 0, .parent = 0, .pbegin = 0, .pend = 0, .rcenter = { 0, 0, 0 }, .need_split = false },
+            0,
+            4);
+
         {
             buffer_map tree(this->tree, 0, 4);
             tree[3].pend = plist1.size();
             tree[3].need_split = true;
         }
 
-        force_tree.fill({ .Mr = zero }, 0, 4);
+        matter_tree.fill(zero, 0, 4);
+        force_tree.fill(zero, 0, 4);
 
-        treecount1.assign(device,
-                          [this](resource<treenode<T, max_multipole>>& tree, pair<gpu_uint, gpu_uint> treerange) {
-                              gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
-                                  gpu_uint totnum = tree[self].pend - tree[self].pbegin;
-                                  for (uint si = 0; si < num_surrounding(); ++si)
-                                  {
-                                      gpu_uint cousin = surrounding_link(self, si);
-                                      totnum += tree[cousin].pend - tree[cousin].pbegin;
-                                  }
-                                  // If true, force calculation wants to go further down the tree.
-                                  tree[self].need_split = (totnum > MAX_NODESIZE());
-                              });
-                          });
+        treecount1.assign(device, [this](resource<treenode<T>>& tree, pair<gpu_uint, gpu_uint> treerange) {
+            gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
+                gpu_uint totnum = tree[self].pend - tree[self].pbegin;
+                for (uint si = 0; si < num_surrounding(); ++si)
+                {
+                    gpu_uint cousin = surrounding_link(self, si);
+                    totnum += tree[cousin].pend - tree[cousin].pbegin;
+                }
+                // If true, force calculation wants to go further down the tree.
+                tree[self].need_split = (totnum > MAX_NODESIZE());
+            });
+        });
 
-        treecount2.assign(device,
-                          [this](resource<treenode<T, max_multipole>>& tree,
-                                 pair<gpu_uint, gpu_uint> treerange,
-                                 resource<Tuint>& node_memory_request) {
-                              gpu_uint need_child_nodes = 0;
+        treecount2.assign(
+            device,
+            [this](
+                resource<treenode<T>>& tree, pair<gpu_uint, gpu_uint> treerange, resource<Tuint>& node_memory_request) {
+                gpu_uint need_child_nodes = 0;
 
-                              // Choosing loop order here in such a way that neighboring nodes in space will also be
-                              // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
-                              // treecount3.
-                              gpu_uint group_begin =
-                                  treerange.first
-                                  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-                                                                  * group_id() / num_groups()),
-                                            (gpu_uint)local_size());
-                              gpu_uint group_end =
-                                  treerange.first
-                                  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-                                                                  * (group_id() + 1) / num_groups()),
-                                            (gpu_uint)local_size());
+                // Choosing loop order here in such a way that neighboring nodes in space will also be
+                // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
+                // treecount3.
+                gpu_uint group_begin = treerange.first
+                                       + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                       * group_id() / num_groups()),
+                                                 (gpu_uint)local_size());
+                gpu_uint group_end = treerange.first
+                                     + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                     * (group_id() + 1) / num_groups()),
+                                               (gpu_uint)local_size());
 
-                              gpu_for(group_begin, group_end, local_size(), [&](gpu_uint group_self) {
-                                  gpu_uint self = group_self + local_id();
-                                  gpu_bool has_children = tree[self].need_split;
-                                  {
-                                      for (uint si = 0; si < num_surrounding(); ++si)
-                                      {
-                                          gpu_uint cousin = surrounding_link(self, si);
-                                          has_children = has_children || (tree[cousin].need_split);
-                                      }
-                                  }
-                                  // If has_children is true, this node must further be split. Either because force
-                                  // calculation wants to continue in this node, or because it is used by another node
-                                  // in the vicinity.
-                                  tree[self].first_child = (gpu_uint)has_children;
-                                  need_child_nodes += (gpu_uint)has_children;
-                              });
+                gpu_for(group_begin, group_end, local_size(), [&](gpu_uint group_self) {
+                    gpu_uint self = group_self + local_id();
+                    gpu_bool has_children = tree[self].need_split;
+                    {
+                        for (uint si = 0; si < num_surrounding(); ++si)
+                        {
+                            gpu_uint cousin = surrounding_link(self, si);
+                            has_children = has_children || (tree[cousin].need_split);
+                        }
+                    }
+                    // If has_children is true, this node must further be split. Either because force
+                    // calculation wants to continue in this node, or because it is used by another node
+                    // in the vicinity.
+                    tree[self].first_child = (gpu_uint)has_children;
+                    need_child_nodes += (gpu_uint)has_children;
+                });
 
-                              need_child_nodes = work_group_reduce_add(need_child_nodes, local_size());
-                              gpu_if(local_id() == 0)
-                              {
-                                  // Writing memory requirements for this workgroup.
-                                  node_memory_request[group_id()] = need_child_nodes;
-                              }
-                          });
+                need_child_nodes = work_group_reduce_add(need_child_nodes, local_size());
+                gpu_if(local_id() == 0)
+                {
+                    // Writing memory requirements for this workgroup.
+                    node_memory_request[group_id()] = need_child_nodes;
+                }
+            });
 
         this->node_memory_request.assign(device, treecount2.num_groups());
 
         treecount3.assign(
             device,
-            [this](resource<treenode<T, max_multipole>>& tree, pair<gpu_uint, gpu_uint> treerange) {
+            [this](resource<treenode<T>>& tree, pair<gpu_uint, gpu_uint> treerange) {
                 gpu_uint next_index = this->node_memory_request[group_id()];
 
                 // Choosing loop order here in such a way that neighboring nodes in space will also be neighboring nodes
@@ -1196,7 +1166,7 @@ struct cosmos : public cosmos_base<T>
             this->treecount2.global_size());
 
         treecount4.assign(device,
-                          [this](resource<treenode<T, max_multipole>>& tree,
+                          [this](resource<treenode<T>>& tree,
                                  const resource<pair<signature_t, Tuint>>& particles,
                                  pair<gpu_uint, gpu_uint> child_treerange,
                                  gpu_uint depth,
@@ -1277,7 +1247,7 @@ struct cosmos : public cosmos_base<T>
             {
                 upwards[mod3][is_bottom].assign(
                     device,
-                    [is_bottom, mod3, this](resource<treenode<T, max_multipole>>& tree,
+                    [is_bottom, mod3, this](resource<treenode<T>>& tree,
                                             const resource<Vector<T, 3>>& xvec,
                                             const resource<T>& massvec,
                                             gpu_uint treebegin,
@@ -1294,13 +1264,13 @@ struct cosmos : public cosmos_base<T>
                             });
                             gpu_for(0, cond(is_pnode, 0u, 2u), [&](gpu_uint child) {
                                 const gpu_uint child_id = tree[t].first_child + child;
-                                const multipole<gpu_T, max_multipole> Mcr = tree[child_id].Mr;
+                                const multipole<gpu_T, max_multipole> Mcr = matter_tree[child_id];
                                 Vector<gpu_T, 3> shift_r = { level_halflen * (1 - gpu_int(2 * child)), 0, 0 };
                                 multipole<gpu_T, max_multipole> Mr = Mcr.rot(-1).shift_ext(shift_r);
                                 Msum_r += Mr;
                             });
 
-                            tree[t].Mr = Msum_r;
+                            matter_tree[t] = Msum_r;
                         });
                     });
             }
@@ -1349,10 +1319,10 @@ struct cosmos : public cosmos_base<T>
                                     }
                                 });
 
-                                F += rot(force_tree[self].Mr.calc_force(rot(x[pa], mod3) - tree[self].rcenter),
+                                F += rot(force_tree[self].calc_force(rot(x[pa], mod3) - tree[self].rcenter),
                                          -(Tint)mod3);
 #if CALC_POTENTIAL
-                                P += force_tree[self].Mr.calc_loc_potential(rot(x[pa], mod3) - tree[self].rcenter);
+                                P += force_tree[self].calc_loc_potential(rot(x[pa], mod3) - tree[self].rcenter);
 #endif
 
                                 v[pa] += F * (gpu_T)DT();
@@ -1386,8 +1356,8 @@ struct cosmos : public cosmos_base<T>
                                                 Pnode += -(mass[p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f));
                                             });
 
-                                            auto M = tree[i].Mr.makelocal(rot(x[pa], mod3) - tree[i].rcenter);
-                                            auto Mc = tree[i].Mr.makelocal(tree[self].rcenter - tree[i].rcenter);
+                                            auto M = matter_tree[i].makelocal(rot(x[pa], mod3) - tree[i].rcenter);
+                                            auto Mc = matter_tree[i].makelocal(tree[self].rcenter - tree[i].rcenter);
                                             Mtest += Mc;
 
                                             Ftest += Fnode;
@@ -1433,7 +1403,7 @@ struct cosmos : public cosmos_base<T>
                     {
                         Vector<gpu_T, 3> shiftvec = { 0, 0, level_halflen * (2 * c - 1) };
                         gpu_uint self = k + c;
-                        multipole<gpu_T, max_multipole> new_multipole = force_tree[parent].Mr.rot().shift_loc(shiftvec);
+                        multipole<gpu_T, max_multipole> new_multipole = force_tree[parent].rot().shift_loc(shiftvec);
 
                         Tuint count = 0;
                         set<unsigned int> handled;
@@ -1465,7 +1435,7 @@ struct cosmos : public cosmos_base<T>
                                             .first_child
                                         + c2;
                                     new_multipole +=
-                                        tree[cousin].Mr.makelocal(-vdata.make_real(cousinvec, level_halflen * 2));
+                                        matter_tree[cousin].makelocal(-vdata.make_real(cousinvec, level_halflen * 2));
                                     ++count;
                                 }
                                 // cout << endl;
@@ -1480,7 +1450,7 @@ struct cosmos : public cosmos_base<T>
                         assert(count == num_surrounding() + 1);
 
                         gpu_assert(isfinite(new_multipole.B[0]));
-                        force_tree[self].Mr = new_multipole;
+                        force_tree[self] = new_multipole;
                     }
                 }
             });
@@ -1509,7 +1479,7 @@ struct cosmos : public cosmos_base<T>
                                     rot(xvec[p], mod3) - tree[k].rcenter, massvec[p]);
                             });
 
-                            DUMP << "\nMr=" << tree[k].Mr << "ist=" << new_multipole;
+                            DUMP << "\nMr=" << matter_tree[k] << "ist=" << new_multipole;
                         }
 
                         {
@@ -1529,10 +1499,10 @@ struct cosmos : public cosmos_base<T>
                                                 .makelocal(tree[k].rcenter - rot(xvec[p], mod3));
                                     });
 
-                                    new_multipole2 += tree[i].Mr.makelocal(tree[k].rcenter - tree[i].rcenter);
+                                    new_multipole2 += matter_tree[i].makelocal(tree[k].rcenter - tree[i].rcenter);
                                 }
                             });
-                            DUMP << "\nforce: Mr=" << force_tree[k].Mr << ", ist=" << new_multipole
+                            DUMP << "\nforce: Mr=" << force_tree[k] << ", ist=" << new_multipole
                                  << ", ist2=" << new_multipole2 << "\n";
                         }
                     });
