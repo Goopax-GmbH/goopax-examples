@@ -93,7 +93,17 @@ int main(int argc, char** argv)
     buffer<Vector<float, 3>> x(window->device, N, params);
     buffer<Vector<float, 3>> x2(window->device, N, params);
     buffer<Vector<float, 4>> colors(window->device, N, params);
-    ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
+    {
+        buffer_map c(colors);
+        for (uint k = 0; k < c.size(); ++k)
+        {
+            c[k] = { pow2(sin(float(k) * 2 * M_PI / c.size())),
+                     pow2(sin(float(k + c.size() / 3) * 2 * M_PI / c.size())),
+                     pow2(sin(float(k + 2 * c.size() / 3) * 2 * M_PI / c.size())),
+                     1.f };
+        }
+    }
+    // ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
 
     VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
 #else
@@ -115,7 +125,7 @@ int main(int argc, char** argv)
                 F += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
             });
 
-            v[i] += F * (dt * mass) * 0;
+            v[i] += F * (dt * mass);
             xnew[i] = x[i] + v[i] * dt;
         },
         0,

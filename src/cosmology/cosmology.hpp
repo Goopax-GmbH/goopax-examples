@@ -7,8 +7,8 @@
 #define WITH_OPENCV 0
 #endif
 
-#include "../common/particle.hpp"
 #include <SDL3/SDL_main.h>
+#include <goopax_draw/particle.hpp>
 #if WITH_TIMINGS
 #include <chrono>
 #endif
@@ -20,7 +20,6 @@
 #include <random>
 #include <set>
 
-#define NEW_MULTIPOLES 1
 #define MULTIPOLE_ORDER 4
 
 using Eigen::Vector;
@@ -105,12 +104,11 @@ Tuint log2_exact(Tsize_t a)
 
 #if USE_CARTESIAN_MULTIPOLES
 #include "multipole_cart.hpp"
-#include "multipole_cart_old.hpp"
 #else
 #include "multipole_sh.hpp"
 #endif
 
-//#include "radix_sort.hpp"
+// #include "radix_sort.hpp"
 const float halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
 
@@ -144,19 +142,17 @@ Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)
 
 auto get_index(gpu_bool cnd, auto& next_index, gpu_uint ret = {})
 {
-  //gpu_uint ret;
-  vector<gpu_uint> b = ballot(cnd, local_size());
-  gpu_uint l = local_id();
-  for (gpu_uint bt : b)
+    // gpu_uint ret;
+    vector<gpu_uint> b = ballot(cnd, local_size());
+    gpu_uint l = local_id();
+    for (gpu_uint bt : b)
     {
-      ret = cond(l < 32u, next_index + popcount(bt & ((1u << l) - 1)), ret);
-      next_index += popcount(bt);
-      l -= 32;
+        ret = cond(l < 32u, next_index + popcount(bt & ((1u << l) - 1)), ret);
+        next_index += popcount(bt);
+        l -= 32;
     }
-  return ret;
+    return ret;
 }
-
-
 
 template<class T = Tfloat>
 struct treenode
@@ -165,39 +161,35 @@ struct treenode
     template<typename X>
     using goopax_struct_changetype = treenode<typename goopax_struct_changetype<T, X>::type>;
     using uint_type = typename change_gpu_mode<unsigned int, T>::type;
-  using uint16_type = typename change_gpu_mode<uint16_t, T>::type;
+    using uint16_type = typename change_gpu_mode<uint16_t, T>::type;
     using bool_type = typename change_gpu_mode<bool, T>::type;
 
-  array<uint_type, 2> children;
+    array<uint_type, 2> children;
     uint_type parent;
     uint_type pbegin;
     uint_type pend;
     Vector<T, 3> rcenter;
-  typename change_gpu_mode<signature_t, T>::type signature;
-  uint16_type depth;
+    typename change_gpu_mode<signature_t, T>::type signature;
+    uint16_type depth;
     bool_type need_split;
     bool_type is_partnode;
 
     template<class STREAM>
     friend STREAM& operator<<(STREAM& s, const treenode& n)
     {
-        s << "[children=" << n.children << ", parent=" << n.parent << ", pbegin=" << n.pbegin
-          << ", pend=" << n.pend
-	  << ", depth=" << n.depth
-	  << ", rcenter=" << n.rcenter
-	  << ", signature=" << hex << n.signature << dec
-	  << ", split=" << n.need_split
-          << ", is_partnode=" << n.is_partnode;
+        s << "[children=" << n.children << ", parent=" << n.parent << ", pbegin=" << n.pbegin << ", pend=" << n.pend
+          << ", depth=" << n.depth << ", rcenter=" << n.rcenter << ", signature=" << hex << n.signature << dec
+          << ", split=" << n.need_split << ", is_partnode=" << n.is_partnode;
         return s;
     }
 };
 
 gpu_type<Tuint*> get_children_p(gpu_type<treenode<>*> p)
 {
-  return reinterpret<gpu_type<Tuint*>>(p)
-    + (&reinterpret<treenode<>*>(nullptr)->children[0] - reinterpret_cast<Tuint*>(reinterpret<treenode<>*>(nullptr)));
+    return reinterpret<gpu_type<Tuint*>>(p)
+           + (&reinterpret<treenode<>*>(nullptr)->children[0]
+              - reinterpret_cast<Tuint*>(reinterpret<treenode<>*>(nullptr)));
 }
-
 
 void myassert(bool b)
 {
@@ -279,31 +271,28 @@ auto calc_sig(const Vector<T, 3>& x, Tuint max_depthbits)
     using sig_t = typename change_gpu_mode<signature_t, T>::type;
     assert(max_depthbits >= 3);
     assert(max_depthbits <= get_size<sig_t>::value * 8);
-    //Vector<Tuint, 3> depth = { (max_depthbits + 2) / 3, (max_depthbits + 1) / 3, (max_depthbits) / 3 };
+    // Vector<Tuint, 3> depth = { (max_depthbits + 2) / 3, (max_depthbits + 1) / 3, (max_depthbits) / 3 };
 
     sig_t ret = calc_sig_fast<T>(x, signature_t()) >> (get_size<sig_t>::value * 8 - max_depthbits);
 
     return ret;
 }
 
-void multi_level_loop(resource<pair<Tuint, Tuint>> map,
-		      gpu_uint tid,
-		      Tuint nt,
-		      std::function<void(gpu_uint)> func)
+void multi_level_loop(resource<pair<Tuint, Tuint>> map, gpu_uint tid, Tuint nt, std::function<void(gpu_uint)> func)
 {
-  auto node_p = map.cbegin();
-  gpu_uint self = tid + node_p->first;
-  
-  gpu_while(node_p->second != 0)
-    {
-      gpu_while(self < node_p->second)
-	{
-	  func(self);
+    auto node_p = map.cbegin();
+    gpu_uint self = tid + node_p->first;
 
-	  self += nt;
-	}
-      self += node_p[1].first - node_p[0].second;
-      ++node_p;
+    gpu_while(node_p->second != 0)
+    {
+        gpu_while(self < node_p->second)
+        {
+            func(self);
+
+            self += nt;
+        }
+        self += node_p[1].first - node_p[0].second;
+        ++node_p;
     }
 }
 
@@ -325,7 +314,7 @@ struct vicinity_data
         return rot(p);
         // return { p[1], p[2], p[0] * 2 + c };
     }
-  static Vector<Tint, 3> child2parent(Vector<Tint, 3> p, Tint c)
+    static Vector<Tint, 3> child2parent(Vector<Tint, 3> p, Tint c)
     {
         p = rot(p, -1);
         p[0] = floor((p[0] + c) / 2.0);
@@ -416,56 +405,54 @@ struct vicinity_data
     }
 };
 
-template <typename U=Tuint> struct Node_memory_request
+template<typename U = Tuint>
+struct Node_memory_request
 {
-  U split;
-  U withchild;
-  U partnode_withchild;
-  U partnode_leaf;
-  U leaf;
+    U split;
+    U withchild;
+    U partnode_withchild;
+    U partnode_leaf;
+    U leaf;
 
-  static Node_memory_request zero()
-  {
-    return {0,0,0,0,0};
-  }
-  template <typename T> Node_memory_request<T> cast() const
-  {
-    return {.split = split,
-	    .withchild = withchild,
-	    .partnode_withchild = partnode_withchild,
-	    .partnode_leaf = partnode_leaf,
-	    .leaf = leaf
-    };
-  }
-  
-  Node_memory_request& operator += (const Node_memory_request& b)
-  {
-    split += b.split;
-    withchild += b.withchild;
-    partnode_withchild += b.partnode_withchild;
-    partnode_leaf += b.partnode_leaf;
-    leaf += b.leaf;
-    return *this;
-  }
+    static Node_memory_request zero()
+    {
+        return { 0, 0, 0, 0, 0 };
+    }
+    template<typename T>
+    Node_memory_request<T> cast() const
+    {
+        return { .split = split,
+                 .withchild = withchild,
+                 .partnode_withchild = partnode_withchild,
+                 .partnode_leaf = partnode_leaf,
+                 .leaf = leaf };
+    }
 
-  template <ostream_type S>
-  friend S& operator << (S& s, const Node_memory_request& n)
-  {
-    return s << "[split=" << n.split
-	     << ", withchild=" << n.withchild
-	     << ", partnode_withchild=" << n.partnode_withchild
-	     << ", partnode_leaf=" << n.partnode_leaf
-	     << ", leaf=" << n.leaf << "]";
-  }
+    Node_memory_request& operator+=(const Node_memory_request& b)
+    {
+        split += b.split;
+        withchild += b.withchild;
+        partnode_withchild += b.partnode_withchild;
+        partnode_leaf += b.partnode_leaf;
+        leaf += b.leaf;
+        return *this;
+    }
+
+    template<ostream_type S>
+    friend S& operator<<(S& s, const Node_memory_request& n)
+    {
+        return s << "[split=" << n.split << ", withchild=" << n.withchild
+                 << ", partnode_withchild=" << n.partnode_withchild << ", partnode_leaf=" << n.partnode_leaf
+                 << ", leaf=" << n.leaf << "]";
+    }
 };
 GOOPAX_PREPARE_STRUCT(Node_memory_request);
 
-template <typename U>
-Node_memory_request<U> operator + (Node_memory_request<U> a, const Node_memory_request<U>& b)
+template<typename U>
+Node_memory_request<U> operator+(Node_memory_request<U> a, const Node_memory_request<U>& b)
 {
-  return a += b;
+    return a += b;
 }
-
 
 template<class T, unsigned int max_multipole>
 struct cosmos
@@ -474,11 +461,11 @@ struct cosmos
     using matter_multipole = multipole<T, T>;
     using force_multipole = multipole<T, T>;
 #elif MULTIPOLE_ORDER == 2
-  using matter_multipole = multipole<T, T, T>;
-  using force_multipole = multipole<T, T, T>;
+    using matter_multipole = multipole<T, T, T>;
+    using force_multipole = multipole<T, T, T>;
 #elif MULTIPOLE_ORDER == 3
-  using matter_multipole = multipole<T, T, T, T>;
-  using force_multipole = multipole<T, T, T, T>;
+    using matter_multipole = multipole<T, T, T, T>;
+    using force_multipole = multipole<T, T, T, T>;
 #elif MULTIPOLE_ORDER == 4
     using matter_multipole = multipole<T, T, T, T, T>;
     using force_multipole = multipole<T, T, T, T, T>;
@@ -488,16 +475,15 @@ struct cosmos
     using gpu_matter_multipole = typename make_gpu<matter_multipole>::type;
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
 
-
-  goopax_device device;
-  const Tuint num_particles;
+    goopax_device device;
+    const Tuint num_particles;
     using gpu_T = typename make_gpu<T>::type;
     buffer<Vector<T, 3>> x;
     buffer<Vector<T, 3>> v;
 #if CALC_POTENTIAL
-    buffer<T> potential2;
+    buffer<T> potential;
 #endif
-  buffer<T> mass;
+    buffer<T> mass;
     buffer<Vector<T, 3>> force;
     buffer<T> tmps; // FIXME: Reduce memory.
 
@@ -505,28 +491,28 @@ struct cosmos
 
     const size_t max_treesize;
     const unsigned int max_nodesize;
-  //Tuint num_particle_calls;
+    // Tuint num_particle_calls;
 
     buffer<treenode<T>> tree;
 
-  //buffer<Tuint> split_indices;
-  //buffer<Tuint> partnode_indices;
-  buffer<Tuint> surrounding_buf;
+    // buffer<Tuint> split_indices;
+    // buffer<Tuint> partnode_indices;
+    buffer<Tuint> surrounding_buf;
 
     vector<pair<Tuint, Tuint>> treeranges;
-  vector<array<Tuint, 3>> treeranges_withchild_nochild;
-  
-  vector<pair<Tuint, Tuint>> split_ranges;
-  vector<pair<Tuint, Tuint>> withchild_ranges;
-  vector<pair<Tuint, Tuint>> partnode_withchild_ranges;
-  vector<pair<Tuint, Tuint>> partnode_leaf_ranges;
-  vector<pair<Tuint, Tuint>> leaf_ranges;
-  
-  vector<pair<Tuint, Tuint>> partnode_ranges;
-  buffer<pair<Tuint, Tuint>> partnode_ranges_buf;
+    vector<array<Tuint, 3>> treeranges_withchild_nochild;
 
-  vector<pair<Tuint, Tuint>> all_leaf_ranges_packed;
-  buffer<pair<Tuint, Tuint>> all_leaf_ranges_packed_buf;
+    vector<pair<Tuint, Tuint>> split_ranges;
+    vector<pair<Tuint, Tuint>> withchild_ranges;
+    vector<pair<Tuint, Tuint>> partnode_withchild_ranges;
+    vector<pair<Tuint, Tuint>> partnode_leaf_ranges;
+    vector<pair<Tuint, Tuint>> leaf_ranges;
+
+    vector<pair<Tuint, Tuint>> partnode_ranges;
+    buffer<pair<Tuint, Tuint>> partnode_ranges_buf;
+
+    vector<pair<Tuint, Tuint>> all_leaf_ranges_packed;
+    buffer<pair<Tuint, Tuint>> all_leaf_ranges_packed_buf;
 
     // buffer<Tuint> undone_uncles;
     unsigned int num_surrounding()
@@ -539,117 +525,117 @@ struct cosmos
         gpu_assert(k < num_surrounding());
         return surrounding_buf[node * num_surrounding() + k];
     }
-  
-  buffer<Node_memory_request<>> node_memory_request;
 
-  void print(auto& tree, pair<Tuint, Tuint> treerange, bool with_surrounding=false)
-  {
-    const_buffer_map map(tree);
-    const_buffer_map surrounding(this->surrounding_buf);
-        //const_buffer_map matter(multipole_tree);
-        //const_buffer_map surrounding(this->surrounding_buf);
+    buffer<Node_memory_request<>> node_memory_request;
+
+    void print(auto& tree, pair<Tuint, Tuint> treerange, bool with_surrounding = false)
+    {
+        const_buffer_map map(tree);
+        const_buffer_map surrounding(this->surrounding_buf);
+        // const_buffer_map matter(multipole_tree);
+        // const_buffer_map surrounding(this->surrounding_buf);
         for (uint k = treerange.first; k < treerange.second; ++k)
         {
-	  cout << k << ": " << map[k];
-	  if (with_surrounding)
-	    {
-	      cout << ". surrounding:";
-	      for (uint s = 0; s < this->num_surrounding(); ++s)
-		{
-		  cout << " " << surrounding[k * this->num_surrounding() + s];
-		}
-	    }
-	  cout << endl;
+            cout << k << ": " << map[k];
+            if (with_surrounding)
+            {
+                cout << ". surrounding:";
+                for (uint s = 0; s < this->num_surrounding(); ++s)
+                {
+                    cout << " " << surrounding[k * this->num_surrounding() + s];
+                }
+            }
+            cout << endl;
         }
     }
 
-  kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
-  
-  kernel<void(pair<Tuint, Tuint> treerange, Tuint parent_begin)> treecount1;
+    kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
 
-  kernel<void(pair<Tuint, Tuint> treerange, buffer<Node_memory_request<>>& node_memory_request)> treecount2;
+    kernel<void(pair<Tuint, Tuint> treerange, Tuint parent_begin)> treecount1;
 
-  kernel<void(pair<Tuint, Tuint> treerange, array<Tuint, 3> treeranges_parent_withchild_nochild, Node_memory_request<> memory_offset)> treecount3;
+    kernel<void(pair<Tuint, Tuint> treerange, buffer<Node_memory_request<>>& node_memory_request)> treecount2;
 
-  array<kernel<void(	  pair<Tuint, Tuint> treerange_with_child,
-			  Tuint treebegin_next,
-			  Tuint depth,
-			  T halflen_sublevel,
-			  buffer<treenode<T>>& dest_tree,
-			  buffer<Vector<T, 3>>& x,
-			  buffer<Vector<T, 3>>& v,
-			  buffer<T>& mass)>, 3>
-  treecount4;
+    kernel<void(pair<Tuint, Tuint> treerange,
+                array<Tuint, 3> treeranges_parent_withchild_nochild,
+                Node_memory_request<> memory_offset)>
+        treecount3;
 
-  kernel<void(pair<Tuint, Tuint> treerange_leaf)> make_tree_clear_leaf_childs;
+    array<kernel<void(pair<Tuint, Tuint> treerange_with_child,
+                      Tuint treebegin_next,
+                      Tuint depth,
+                      T halflen_sublevel,
+                      buffer<treenode<T>>& dest_tree,
+                      buffer<Vector<T, 3>>& x,
+                      buffer<Vector<T, 3>>& v,
+                      buffer<T>& mass)>,
+          3>
+        treecount4;
 
-  array<kernel<void(pair<Tuint, Tuint> treerange_parent, pair<Tuint, Tuint> treerange, T halflen)>, 2> make_surrounding;
+    kernel<void(pair<Tuint, Tuint> treerange_leaf)> make_tree_clear_leaf_childs;
 
-  kernel<void(const buffer<Vector<T, 3>>& x,
-	      const buffer<T>& mass,
-	      buffer<Vector<T, 3>>& force,
-	      buffer<T>& potential)> handle_particles_direct;
+    array<kernel<void(pair<Tuint, Tuint> treerange_parent, pair<Tuint, Tuint> treerange, T halflen)>, 2>
+        make_surrounding;
 
-  kernel<void(T dt, buffer<Vector<T, 3>>& v, buffer<Vector<T, 3>>& x)> movefunc;
+    array<kernel<void(
+              const buffer<Vector<T, 3>>& x, const buffer<T>& mass, buffer<Vector<T, 3>>& force, buffer<T>& potential)>,
+          2>
+        handle_particles_direct;
 
-  kernel<void(T dt, const buffer<Vector<T, 3>>& force, buffer<Vector<T, 3>>& v)> kick;
+    kernel<void(T dt, buffer<Vector<T, 3>>& v, buffer<Vector<T, 3>>& x)> movefunc;
 
-  kernel<void(const buffer<Vector<T, 3>>& in,
-	      buffer<Vector<T, 3>>& out)>
-  apply_vec2;
+    kernel<void(T dt, const buffer<Vector<T, 3>>& force, buffer<Vector<T, 3>>& v)> kick;
 
-  kernel<void(const buffer<T>& in, buffer<T>& out)>
-  apply_scalar2;
+    kernel<void(const buffer<Vector<T, 3>>& in, buffer<Vector<T, 3>>& out)> apply_vec2;
 
-  
-  
+    kernel<void(const buffer<T>& in, buffer<T>& out)> apply_scalar2;
+
     kernel<double(const buffer<Vector<T, 3>>& x,
-			     const buffer<Vector<T, 3>>& force,
-			     const buffer<T>& mass,
-		  const buffer<T>& potential,
+                  const buffer<Vector<T, 3>>& force,
+                  const buffer<T>& mass,
+                  const buffer<T>& potential,
 #if CALC_POTENTIAL
-        goopax_future<double>& poterr,
+                  goopax_future<double>& poterr,
 #endif
-        Tuint pnum)>
+                  Tuint pnum)>
         verify;
 
-  //radix_sort<pair<signature_t, Tuint>, signature_t> Radix;
+    // radix_sort<pair<signature_t, Tuint>, signature_t> Radix;
 
-  void make_tree()
+    void make_tree()
     {
-      cout << "make_tree" << endl;
-      
+        cout << "make_tree" << endl;
+
 #if WITH_TIMINGS
         vector<chrono::duration<double>> treetime(7, 0s);
         device.wait_all();
         auto t0 = steady_clock::now();
 #endif
-	if (treeranges.empty())
-	  {
-	    scratch.fill(0, scratch_offset_old_node, scratch_offset_old_node+tree.size());
-	    scratch.fill(0, scratch_offset_old_children, scratch_offset_old_children+2*tree.size());
-	  }
-	else
-	  {
-	    save_old_tree_data({0, treeranges.back().second});
-	  }
+        if (treeranges.empty())
+        {
+            scratch.fill(0, scratch_offset_old_node, scratch_offset_old_node + tree.size());
+            scratch.fill(0, scratch_offset_old_children, scratch_offset_old_children + 2 * tree.size());
+        }
+        else
+        {
+            save_old_tree_data({ 0, treeranges.back().second });
+        }
 
         Tuint treesize = 1;
         Tuint treeoffset = 3;
-        //Tuint split_index_offset = 0;
-        //Tuint partnode_index_offset = 0;
+        // Tuint split_index_offset = 0;
+        // Tuint partnode_index_offset = 0;
 
         this->treeranges.clear();
-	
+
         this->split_ranges.clear();
         this->withchild_ranges.clear();
         this->partnode_withchild_ranges.clear();
         this->partnode_leaf_ranges.clear();
         this->leaf_ranges.clear();
-	treeranges_withchild_nochild.clear();
+        treeranges_withchild_nochild.clear();
 
-	partnode_ranges.clear();
-	all_leaf_ranges_packed.clear();
+        partnode_ranges.clear();
+        all_leaf_ranges_packed.clear();
 
 #if WITH_TIMINGS
         device.wait_all();
@@ -657,22 +643,22 @@ struct cosmos
 #endif
 
 #if GOOPAX_DEBUG
-	scratch_tree.fill({});
-	surrounding_buf.fill({}, 4*num_surrounding(), surrounding_buf.size());
+        scratch_tree.fill({});
+        surrounding_buf.fill({}, 4 * num_surrounding(), surrounding_buf.size());
 #endif
-	
-	this->scratch_tree.copy(this->tree, 4, 0, 0);
-	//this->surrounding_buf.fill(0, 0, 4*num_surrounding());
+
+        this->scratch_tree.copy(this->tree, 4, 0, 0);
+        // this->surrounding_buf.fill(0, 0, 4*num_surrounding());
 #if GOOPAX_DEBUG
-	{
-	  buffer_map scratch_tree(this->scratch_tree);
-	  scratch_tree[3].children = {};
-	}
+        {
+            buffer_map scratch_tree(this->scratch_tree);
+            scratch_tree[3].children = {};
+        }
 #endif
 
         {
             double level_halflen = halflen;
-	    Tuint parent_begin = 0;
+            Tuint parent_begin = 0;
             for (Tuint depth = 0; depth < MAX_DEPTH(); ++depth)
             {
                 pair<Tuint, Tuint> treerange = { treeoffset, treeoffset + treesize };
@@ -686,14 +672,14 @@ struct cosmos
                 device.wait_all();
                 auto g0 = steady_clock::now();
 #endif
-		
-		if (depth != 0)
-		  {
-		    make_surrounding[true]({
-			treeranges_withchild_nochild[depth-1][0],
-			treeranges_withchild_nochild[depth-1][1]},
-		      treerange, level_halflen);
-		  }
+
+                if (depth != 0)
+                {
+                    make_surrounding[true](
+                        { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
+                        treerange,
+                        level_halflen);
+                }
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -701,12 +687,12 @@ struct cosmos
 #endif
                 if (depth != 0)
                 {
-		  //cout << "calling treecount1. treerange=" << treerange << endl;
-		  this->treecount1(treerange, parent_begin);
-		}
+                    // cout << "calling treecount1. treerange=" << treerange << endl;
+                    this->treecount1(treerange, parent_begin);
+                }
 
-		//cout << "after treecount1: scratch_tree:\n";
-		//print(this->scratch_tree, treerange);
+                // cout << "after treecount1: scratch_tree:\n";
+                // print(this->scratch_tree, treerange);
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -715,115 +701,118 @@ struct cosmos
 
                 this->treecount2(treerange, this->node_memory_request);
 
-		//cout << "after treecount2: scratch_tree:\n";
-		//print(this->scratch_tree, treerange);
+                // cout << "after treecount2: scratch_tree:\n";
+                // print(this->scratch_tree, treerange);
 
-		
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g5 = steady_clock::now();
 #endif
 
-		Node_memory_request<Tuint> memory_offset;
+                Node_memory_request<Tuint> memory_offset;
                 {
-		  Node_memory_request<Tuint> sum = zero;
-		  //Tuint next_split_index = split_index_offset;
-		  //Tuint next_partnode_index = partnode_index_offset;
+                    Node_memory_request<Tuint> sum = zero;
+                    // Tuint next_split_index = split_index_offset;
+                    // Tuint next_partnode_index = partnode_index_offset;
                     buffer_map node_memory_request(this->node_memory_request);
-                    //Tuint next_index = treerange.second / 2;
-		    //Tuint num_partnode = 0;
-		    //Tuint num_split = 0;
-		    //Tuint num_other = 0;
-		    //cout << "node_memory_requests:\n";
+                    // Tuint next_index = treerange.second / 2;
+                    // Tuint num_partnode = 0;
+                    // Tuint num_split = 0;
+                    // Tuint num_other = 0;
+                    // cout << "node_memory_requests:\n";
                     for (auto& n : node_memory_request)
                     {
-		      auto tmp = n;
-		      n = sum;
-		      sum += tmp;
-		      //cout << "n=" << tmp << ", sum=" << sum << endl;
+                        auto tmp = n;
+                        n = sum;
+                        sum += tmp;
+                        // cout << "n=" << tmp << ", sum=" << sum << endl;
                     }
-		    //cout << endl;
-		    
-                    split_ranges.push_back({ treeoffset, treeoffset + sum.split});
-		    treeoffset += sum.split;
+                    // cout << endl;
 
-		    withchild_ranges.push_back({ treeoffset, treeoffset + sum.withchild});
-		    treeoffset += sum.withchild;
+                    split_ranges.push_back({ treeoffset, treeoffset + sum.split });
+                    treeoffset += sum.split;
 
-                    partnode_withchild_ranges.push_back({ treeoffset, treeoffset + sum.partnode_withchild});
-		    treeoffset += sum.partnode_withchild;
+                    withchild_ranges.push_back({ treeoffset, treeoffset + sum.withchild });
+                    treeoffset += sum.withchild;
 
-		    partnode_leaf_ranges.push_back({ treeoffset, treeoffset + sum.partnode_leaf});
-		    treeoffset += sum.partnode_leaf;
+                    partnode_withchild_ranges.push_back({ treeoffset, treeoffset + sum.partnode_withchild });
+                    treeoffset += sum.partnode_withchild;
 
-		    leaf_ranges.push_back({ treeoffset, treeoffset + sum.leaf});
-		    treeoffset += sum.leaf;
+                    partnode_leaf_ranges.push_back({ treeoffset, treeoffset + sum.partnode_leaf });
+                    treeoffset += sum.partnode_leaf;
 
-		    partnode_ranges.push_back({partnode_withchild_ranges.back().first, partnode_leaf_ranges.back().second});
-		    if (partnode_leaf_ranges.back().first != treerange.second)
-		      {
-			all_leaf_ranges_packed.push_back({partnode_leaf_ranges.back().first, treerange.second});
-		      }
-		    
-		    treesize = 2 * (sum.split + sum.withchild + sum.partnode_withchild);
+                    leaf_ranges.push_back({ treeoffset, treeoffset + sum.leaf });
+                    treeoffset += sum.leaf;
 
-		    treeranges_withchild_nochild.push_back({treerange.first, partnode_withchild_ranges.back().second, treerange.second});
-		    
-		    memory_offset.split = treerange.first;
-		    memory_offset.withchild = memory_offset.split + sum.split;
-		    memory_offset.partnode_withchild = memory_offset.withchild + sum.withchild;
-		    memory_offset.partnode_leaf = memory_offset.partnode_withchild + sum.partnode_withchild;
-		    memory_offset.leaf = memory_offset.partnode_leaf + sum.partnode_leaf;
-		    
-		    /*
-		      cout << "treeoffset=" << treeoffset << ", treerange=" << treerange
-			 << ", sum=" << sum
-			 << ", memory_offset=" << memory_offset
-			 << endl;
-		    */
+                    partnode_ranges.push_back(
+                        { partnode_withchild_ranges.back().first, partnode_leaf_ranges.back().second });
+                    if (partnode_leaf_ranges.back().first != treerange.second)
+                    {
+                        all_leaf_ranges_packed.push_back({ partnode_leaf_ranges.back().first, treerange.second });
+                    }
+
+                    treesize = 2 * (sum.split + sum.withchild + sum.partnode_withchild);
+
+                    treeranges_withchild_nochild.push_back(
+                        { treerange.first, partnode_withchild_ranges.back().second, treerange.second });
+
+                    memory_offset.split = treerange.first;
+                    memory_offset.withchild = memory_offset.split + sum.split;
+                    memory_offset.partnode_withchild = memory_offset.withchild + sum.withchild;
+                    memory_offset.partnode_leaf = memory_offset.partnode_withchild + sum.partnode_withchild;
+                    memory_offset.leaf = memory_offset.partnode_leaf + sum.partnode_leaf;
+
+                    /*
+                      cout << "treeoffset=" << treeoffset << ", treerange=" << treerange
+                     << ", sum=" << sum
+                     << ", memory_offset=" << memory_offset
+                     << endl;
+                    */
                 }
 
-		
-		
-		assert(treeoffset == treerange.second);
+                assert(treeoffset == treerange.second);
 
                 if (treerange.second + treesize > tree.size())
                 {
                     throw std::runtime_error("tree too small");
                 }
 
-                treecount3(treerange, (depth == 0 ? array<Tuint, 3>{0,0,0} : treeranges_withchild_nochild[depth-1]), memory_offset);
+                treecount3(treerange,
+                           (depth == 0 ? array<Tuint, 3>{ 0, 0, 0 } : treeranges_withchild_nochild[depth - 1]),
+                           memory_offset);
 
-		//cout << "after treecount3: tree:\n";
-		//print(this->tree, treerange);
+                // cout << "after treecount3: tree:\n";
+                // print(this->tree, treerange);
 
-		
-		if (depth != 0)
-		  {
-		    make_surrounding[false]({
-			treeranges_withchild_nochild[depth-1][0],
-			treeranges_withchild_nochild[depth-1][1]},
-		      treerange, level_halflen);
-		  }
-		
+                if (depth != 0)
+                {
+                    make_surrounding[false](
+                        { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
+                        treerange,
+                        level_halflen);
+                }
+
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g6 = steady_clock::now();
 #endif
 
-		/*
-		  cout << "calling treecount4. new range: " << pair{treerange.first, partnode_withchild_ranges.back().second}
-		  << ", treesize=" << treesize
-		     << ", -> next_begin=" << treerange.first + treesize
-		 << endl;
-		*/
-		
-                treecount4[depth%3](
-                           {treerange.first, partnode_withchild_ranges.back().second},
-			   treerange.second,
-			   depth,
-                           halflen * pow(2.0, (-1 - Tint(depth)) / 3.0),
-								(treesize != 0 ? scratch_tree : tree), x, v, mass);
+                /*
+                  cout << "calling treecount4. new range: " << pair{treerange.first,
+                 partnode_withchild_ranges.back().second}
+                  << ", treesize=" << treesize
+                     << ", -> next_begin=" << treerange.first + treesize
+                 << endl;
+                */
+
+                treecount4[depth % 3]({ treerange.first, partnode_withchild_ranges.back().second },
+                                      treerange.second,
+                                      depth,
+                                      halflen * pow(2.0, (-1 - Tint(depth)) / 3.0),
+                                      (treesize != 0 ? scratch_tree : tree),
+                                      x,
+                                      v,
+                                      mass);
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g7 = steady_clock::now();
@@ -834,13 +823,13 @@ struct cosmos
                 {
                     boxsize[k] = halflen * (pow(2.0, -Tint(depth + 2 - k) / 3 + (2.0 - k) / 3.0) + 1E-7);
                 }
-                //cout1 << "boxsize=" << boxsize << endl;
+                // cout1 << "boxsize=" << boxsize << endl;
 
-		//cout << "after treecount4\n";
-		//print(this->tree, treerange);
+                // cout << "after treecount4\n";
+                // print(this->tree, treerange);
 
-		parent_begin = treerange.first;
-		    
+                parent_begin = treerange.first;
+
                 if (treesize == 0)
                     break;
 
@@ -849,41 +838,43 @@ struct cosmos
 #if WITH_TIMINGS
                 treetime[0] += (g1 - g0);
                 treetime[1] += (g2 - g1);
-                //treetime[2] += (g3 - g2);
-                //treetime[3] += (g4 - g3);
+                // treetime[2] += (g3 - g2);
+                // treetime[3] += (g4 - g3);
                 treetime[4] += (g5 - g2);
                 treetime[5] += (g6 - g5);
                 treetime[6] += (g7 - g6);
 #endif
             }
 
-	    make_tree_clear_leaf_childs({treeranges_withchild_nochild.back()[1], treeranges_withchild_nochild.back()[2]});
+            make_tree_clear_leaf_childs(
+                { treeranges_withchild_nochild.back()[1], treeranges_withchild_nochild.back()[2] });
 
             // cout << "tree size: " << treeoffset << " / " << tree.size() << "\nsplit_index size: " <<
             // split_index_offset
             //<< "\npartnode size: " << partnode_index_offset << endl;
         }
 
-	partnode_ranges.push_back({0,0});
-	partnode_ranges_buf.copy_from_host_async(partnode_ranges.data(), 0, partnode_ranges.size());
+        partnode_ranges.push_back({ 0, 0 });
+        partnode_ranges_buf.copy_from_host_async(partnode_ranges.data(), 0, partnode_ranges.size());
 
-	all_leaf_ranges_packed.push_back({0,0});
-	all_leaf_ranges_packed_buf.copy_from_host_async(all_leaf_ranges_packed.data(), 0, all_leaf_ranges_packed.size());
+        all_leaf_ranges_packed.push_back({ 0, 0 });
+        all_leaf_ranges_packed_buf.copy_from_host_async(
+            all_leaf_ranges_packed.data(), 0, all_leaf_ranges_packed.size());
 
 #if GOOPAX_DEBUG
-	scratch_tree.fill({});
+        scratch_tree.fill({});
 #endif
-	force_tree.fill(zero, 0, 4);
-	
-	/*
-	  	cout << "AFTER make_tree:" << endl;
-	for (uint depth=0; depth<treeranges.size(); ++depth)
-	  {
-	    cout << "depth=" << depth << ":\n";
-	    print(this->tree, treeranges[depth], true);
-	  }
-	*/
-	
+        force_tree.fill(zero, 0, 4);
+
+        /*
+            cout << "AFTER make_tree:" << endl;
+        for (uint depth=0; depth<treeranges.size(); ++depth)
+          {
+            cout << "depth=" << depth << ":\n";
+            print(this->tree, treeranges[depth], true);
+          }
+        */
+
         if (treeranges.size() > MAX_DEPTH())
         {
             cerr << "treerange.size()=" << treeranges.size() << " > MAX_DEPTH=" << MAX_DEPTH() << endl;
@@ -893,22 +884,22 @@ struct cosmos
 #if WITH_TIMINGS
         device.wait_all();
         auto t2 = steady_clock::now();
-	cout << "\nmake_tree (update=" << update << "):\n"
-	     << "  sort particles: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
-	     << "  tree: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-	     << "    make_surrounding: " << duration_cast<chrono::milliseconds>(treetime[0]) << endl
-	     << "    treecount1: " << duration_cast<chrono::milliseconds>(treetime[1]) << endl
-        //cout << "  fill: " << duration_cast<chrono::milliseconds>(treetime[2]) << endl;
-        //cout << "  surrounding buf: " << duration_cast<chrono::milliseconds>(treetime[3]) << endl;
-	     << "    treecount2: " << duration_cast<chrono::milliseconds>(treetime[4]) << endl
-	     << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
-	     << "    treecount4: " << duration_cast<chrono::milliseconds>(treetime[6]) << endl;
+        cout << "\nmake_tree (update=" << update << "):\n"
+             << "  sort particles: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
+             << "  tree: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
+             << "    make_surrounding: " << duration_cast<chrono::milliseconds>(treetime[0]) << endl
+             << "    treecount1: " << duration_cast<chrono::milliseconds>(treetime[1])
+             << endl
+             // cout << "  fill: " << duration_cast<chrono::milliseconds>(treetime[2]) << endl;
+             // cout << "  surrounding buf: " << duration_cast<chrono::milliseconds>(treetime[3]) << endl;
+             << "    treecount2: " << duration_cast<chrono::milliseconds>(treetime[4]) << endl
+             << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
+             << "    treecount4: " << duration_cast<chrono::milliseconds>(treetime[6]) << endl;
 #endif
     }
 
-
-  void make_IC(const char* filename = nullptr)
-  {
+    void make_IC(const char* filename = nullptr)
+    {
         cout << "generating initial conditions..." << flush;
         size_t N = x.size();
 
@@ -1035,15 +1026,54 @@ struct cosmos
 
     void precision_test()
     {
+        if (!verify.valid())
+        {
+            verify.assign(device,
+                          [this](const resource<Vector<T, 3>>& x,
+                                 const resource<Vector<T, 3>>& force,
+                                 const resource<T>& mass,
+                                 const resource<T>& potential,
+#if CALC_POTENTIAL
+                                 gather_add<double>& poterr,
+#endif
+                                 gpu_uint pnum) -> gather_add<double> {
+                              gpu_double ret = 0;
+#if CALC_POTENTIAL
+                              poterr = 0;
+#endif
+                              gpu_for_global(0, pnum, [&](gpu_uint p) {
+                                  gpu_uint a = gpu_uint(gpu_uint64(x.size()) * p / pnum);
+                                  Vector<gpu_double, 3> F = { 0, 0, 0 };
+                                  gpu_double P = 0;
+                                  gpu_for(0, x.size(), [&](gpu_uint b) {
+                                      Vector<gpu_double, 3> dist = (x[b] - x[a]).template cast<gpu_double>();
+                                      gpu_if(a != b)
+                                      {
+                                          F += mass[b] * dist * pow<-3, 2>(dist.squaredNorm() + 1E-20);
+                                          P += -mass[b] * pow<-1, 2>(dist.squaredNorm() + 1E-20);
+                                      }
+                                  });
+                                  ret += (force[a].template cast<gpu_double>() - F).squaredNorm();
+#if CALC_POTENTIAL
+                                  poterr += pow2(potential[a] - P);
+#endif
+                              });
+                              return ret;
+                          });
+        }
+
         // cout << "Doing precision test" << endl;
         const Tuint np = min(x.size(), (Tuint)100);
 
         goopax_future<double> poterr;
-        Tdouble tot = verify(x, force, mass, potential2,
+        Tdouble tot = verify(x,
+                             force,
+                             mass,
+                             potential,
 #if CALC_POTENTIAL
-                          poterr,
+                             poterr,
 #endif
-                          np)
+                             np)
                           .get();
         cout << "err=" << sqrt(tot / np) << ", poterr=" << sqrt(poterr.get() / np) << endl;
 
@@ -1052,54 +1082,55 @@ struct cosmos
         PLOT << sqrt(tot / np) << " " << sqrt(poterr.get() / np) << " " << endl;
     }
 
-
     buffer<matter_multipole> matter_tree;
     buffer<force_multipole> force_tree;
 
-  buffer<Tuint> scratch;
-  buffer<treenode<T>> scratch_tree;
+    buffer<Tuint> scratch;
+    buffer<treenode<T>> scratch_tree;
 
-  
-  array<kernel<void(array<Tuint, 3> treerange, T scale,
-		    const buffer<Vector<T, 3>>& x, const buffer<T>& mass)>, 3> upwards;
+    array<kernel<void(array<Tuint, 3> treerange, T scale, const buffer<Vector<T, 3>>& x, const buffer<T>& mass)>, 3>
+        upwards;
 
-    kernel<void(pair<Tuint, Tuint> split_range)> downwards2;
+    array<kernel<void(pair<Tuint, Tuint> split_range)>, 2> downwards2;
 
-  array<kernel<void(pair<Tuint, Tuint> partnode_range, T scale,
-		    const buffer<Vector<T, 3>>& x,
-	      buffer<Vector<T, 3>>& force,
-	      buffer<T>& potential)>, 3> handle_particles_from_multipole;
+    array<array<kernel<void(pair<Tuint, Tuint> partnode_range,
+                            T scale,
+                            const buffer<Vector<T, 3>>& x,
+                            buffer<Vector<T, 3>>& force,
+                            buffer<T>& potential)>,
+                3>,
+          2>
+        handle_particles_from_multipole;
 
+    // buffer<pair<Tuint, Tuint>> scratch2;
+    static constexpr unsigned int scratch_offset = 4 * sizeof(matter_multipole) / sizeof(Tuint);
 
-  //buffer<pair<Tuint, Tuint>> scratch2;
-  static constexpr unsigned int scratch_offset = 4*sizeof(matter_multipole) / sizeof(Tuint);
-  
-  const Tuint scratch_offset_tree = scratch_offset;
-  
-  const Tuint scratch_offset_next_p = scratch_offset;
-  //const Tuint scratch_offset_num_removed = scratch_offset_next_p + this->tree.size();
-  const Tuint scratch_offset_particle_list = scratch_offset_next_p + this->tree.size();
-  const Tuint scratch_offset_nodelink = scratch_offset_particle_list + num_particles;
-  
-  const Tuint scratch_offset_new_num_p = scratch_offset_nodelink + num_particles;
+    const Tuint scratch_offset_tree = scratch_offset;
 
-  const Tuint scratch_offset_old_p_range = scratch_offset_new_num_p + this->tree.size();
-  const Tuint scratch_offset_group_sum = scratch_offset_old_p_range + 2*this->tree.size();
-  const Tuint scratch_offset_new_order = scratch_offset_nodelink;
+    const Tuint scratch_offset_next_p = scratch_offset;
+    // const Tuint scratch_offset_num_removed = scratch_offset_next_p + this->tree.size();
+    const Tuint scratch_offset_particle_list = scratch_offset_next_p + this->tree.size();
+    const Tuint scratch_offset_nodelink = scratch_offset_particle_list + num_particles;
 
-  const Tuint scratch_offset_old_children = scratch_offset_tree;
-  const Tuint scratch_offset_old_node = scratch_offset_group_sum + tree.size();
-  
-  kernel<void()> update_tree_set_nodelink;
-  kernel<void(const buffer<Vector<T, 3>>& x)> update_tree_1;
-  kernel<void(pair<Tuint, Tuint> leaf_range, pair<Tuint, Tuint> withchild_range)> update_tree_upwards;
-  kernel<void(pair<Tuint, Tuint> treerange_parent)> update_tree_downwards;
-  kernel<void()> update_tree_reorder_particles;
-  
-    void compute_force()
+    const Tuint scratch_offset_new_num_p = scratch_offset_nodelink + num_particles;
+
+    const Tuint scratch_offset_old_p_range = scratch_offset_new_num_p + this->tree.size();
+    const Tuint scratch_offset_group_sum = scratch_offset_old_p_range + 2 * this->tree.size();
+    const Tuint scratch_offset_new_order = scratch_offset_nodelink;
+
+    const Tuint scratch_offset_old_children = scratch_offset_tree;
+    const Tuint scratch_offset_old_node = scratch_offset_group_sum + tree.size();
+
+    kernel<void()> update_tree_set_nodelink;
+    kernel<void(const buffer<Vector<T, 3>>& x)> update_tree_1;
+    kernel<void(pair<Tuint, Tuint> leaf_range, pair<Tuint, Tuint> withchild_range)> update_tree_upwards;
+    kernel<void(pair<Tuint, Tuint> treerange_parent)> update_tree_downwards;
+    kernel<void()> update_tree_reorder_particles;
+
+    void compute_force(bool with_potential)
     {
 #if WITH_TIMINGS
-      device.wait_all();
+        device.wait_all();
         auto t1 = steady_clock::now();
 #endif
 
@@ -1108,7 +1139,7 @@ struct cosmos
 
             for (Tuint depth = this->treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
-	      upwards[modulo((int)depth, 3)](this->treeranges_withchild_nochild[depth], scale, x, mass);
+                upwards[modulo((int)depth, 3)](this->treeranges_withchild_nochild[depth], scale, x, mass);
 
                 scale *= pow<-1, 3>(2.0);
             }
@@ -1119,18 +1150,18 @@ struct cosmos
         auto t2 = steady_clock::now();
 #endif
 
-	/*
-	  cout << "calling handle_particles_direct." << endl;
-  cout << "partnode_ranges:\n";
-  for (auto& p : const_buffer_map(partnode_ranges_buf))
-    {
-      cout << p << endl;
-    }
-  cout << endl;
-	*/
-	
-	this->handle_particles_direct(x, mass, force, potential2);
-	
+        /*
+          cout << "calling handle_particles_direct." << endl;
+      cout << "partnode_ranges:\n";
+      for (auto& p : const_buffer_map(partnode_ranges_buf))
+        {
+          cout << p << endl;
+        }
+      cout << endl;
+        */
+
+        this->handle_particles_direct[with_potential](x, mass, force, potential);
+
 #if WITH_TIMINGS
         device.wait_all();
         auto t3 = steady_clock::now();
@@ -1153,14 +1184,15 @@ struct cosmos
                 auto d0 = steady_clock::now();
 #endif
 
-                downwards2(this->split_ranges[depth - 1]);
+                downwards2[with_potential](this->split_ranges[depth - 1]);
 
 #if WITH_TIMINGS
                 device.wait_all();
                 auto d1 = steady_clock::now();
 #endif
 
-                handle_particles_from_multipole[modulo((int)depth, 3)](this->partnode_ranges[depth], scale, x, force, potential2);
+                handle_particles_from_multipole[with_potential][modulo((int)depth, 3)](
+                    this->partnode_ranges[depth], scale, x, force, potential);
                 // cout << "partnode_index_range[" << depth << "]=" << partnode_index_ranges[depth] << endl;
 
 #if WITH_TIMINGS
@@ -1175,84 +1207,84 @@ struct cosmos
 
 #if WITH_TIMINGS
         // cout << "treecount: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
-	cout << "\ncompute_force:\n"
-	     << "  upwards: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-	     << "  handle_particles (direct): " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms" << endl
-	     << "  downwards: " << duration_cast<std::chrono::milliseconds>(time_downwards).count() << " ms" << endl
-	     << "  handle_particles (multipole): " << duration_cast<std::chrono::milliseconds>(time_hp).count() << " ms"
+        cout << "\ncompute_force:\n"
+             << "  upwards: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
+             << "  handle_particles (direct): " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms"
+             << endl
+             << "  downwards: " << duration_cast<std::chrono::milliseconds>(time_downwards).count() << " ms" << endl
+             << "  handle_particles (multipole): " << duration_cast<std::chrono::milliseconds>(time_hp).count() << " ms"
              << endl;
 #endif
     }
 
-  void update_tree() 
-  {
+    void update_tree()
+    {
 #if GOOPAX_DEBUG
-    scratch.fill({}, scratch_offset, scratch.size());
-#endif
-    
-    scratch.fill(~0u, scratch_offset_next_p, scratch_offset_next_p + this->treeranges.back().second);
-    scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + x.size());
-    scratch.fill(0, scratch_offset_new_num_p, scratch_offset_new_num_p+2);
-    
-#if WITH_TIMINGS
-    device.wait_all();
-    auto t0 = steady_clock::now();
+        scratch.fill({}, scratch_offset, scratch.size());
 #endif
 
-	update_tree_set_nodelink();
-	
-	//cout << "calling update_tree_1" << endl;
-	//cout << "all_leaf_ranges_packed=" << all_leaf_ranges_packed_buf << endl;
+        scratch.fill(~0u, scratch_offset_next_p, scratch_offset_next_p + this->treeranges.back().second);
+        scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + x.size());
+        scratch.fill(0, scratch_offset_new_num_p, scratch_offset_new_num_p + 2);
+
+#if WITH_TIMINGS
+        device.wait_all();
+        auto t0 = steady_clock::now();
+#endif
+
+        update_tree_set_nodelink();
+
+        // cout << "calling update_tree_1" << endl;
+        // cout << "all_leaf_ranges_packed=" << all_leaf_ranges_packed_buf << endl;
 #if WITH_TIMINGS
         device.wait_all();
         auto t1 = steady_clock::now();
 #endif
-	update_tree_1(x);
+        update_tree_1(x);
 
 #if WITH_TIMINGS
         device.wait_all();
         auto t2 = steady_clock::now();
 #endif
 
-	
-	for (Tint depth = this->treeranges.size() - 1; depth != -1; --depth)
-	  {
-	    //cout << "calling upwards. depth=" << depth << ", partnode_range: " << this->partnode_ranges[depth]
-	    //<< ", si range: " << this->split_ranges[depth]
-	    //<< endl;
-	    update_tree_upwards({this->partnode_leaf_ranges[depth].first, treeranges[depth].second},
-				     {this->treeranges[depth].first, this->partnode_withchild_ranges[depth].second});
-	  }
+        for (Tint depth = this->treeranges.size() - 1; depth != -1; --depth)
+        {
+            // cout << "calling upwards. depth=" << depth << ", partnode_range: " << this->partnode_ranges[depth]
+            //<< ", si range: " << this->split_ranges[depth]
+            //<< endl;
+            update_tree_upwards({ this->partnode_leaf_ranges[depth].first, treeranges[depth].second },
+                                { this->treeranges[depth].first, this->partnode_withchild_ranges[depth].second });
+        }
 
 #if WITH_TIMINGS
         device.wait_all();
         auto t3 = steady_clock::now();
 #endif
 
-	
-	for (Tuint depth = 1; depth < this->treeranges.size(); ++depth)
-	  {
-	    //cout << "calling update_tree_downwards(" << this->treeranges[depth] << "), depth=" << depth << endl;
-	    update_tree_downwards({treeranges_withchild_nochild[depth-1][0], treeranges_withchild_nochild[depth-1][1]});
+        for (Tuint depth = 1; depth < this->treeranges.size(); ++depth)
+        {
+            // cout << "calling update_tree_downwards(" << this->treeranges[depth] << "), depth=" << depth << endl;
+            update_tree_downwards(
+                { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] });
 
-	    //cout << "after downwards: tree:\n";
-	    //print(this->tree, treeranges[depth]);
-	  }
+            // cout << "after downwards: tree:\n";
+            // print(this->tree, treeranges[depth]);
+        }
 #if WITH_TIMINGS
         device.wait_all();
         auto t4 = steady_clock::now();
 #endif
-	
-	//cout << "plist:" << endl;
-	//for (auto& p : const_buffer_map(plist1))
-	//{
-	//cout << p << endl;
-	//}
-	//cout << endl;
 
-	//cout << "calling update_tree_reorder_particles. leaf_ra
-	
-	update_tree_reorder_particles();
+        // cout << "plist:" << endl;
+        // for (auto& p : const_buffer_map(plist1))
+        //{
+        // cout << p << endl;
+        // }
+        // cout << endl;
+
+        // cout << "calling update_tree_reorder_particles. leaf_ra
+
+        update_tree_reorder_particles();
 
 #if WITH_TIMINGS
         device.wait_all();
@@ -1260,100 +1292,97 @@ struct cosmos
 #endif
 
         this->apply_vec2(x, force);
-	swap(x, force);
+        swap(x, force);
         this->apply_vec2(v, force);
-	swap(v, force);
+        swap(v, force);
         this->apply_scalar2(mass, tmps);
-	swap(mass, tmps);
-	
+        swap(mass, tmps);
+
 #if WITH_TIMINGS
         device.wait_all();
         auto t6 = steady_clock::now();
 #endif
 
-	
-	/*
-	cout << "AFTER update_tree:" << endl;
-	for (uint depth=0; depth<treeranges.size(); ++depth)
-	  {
-	    cout << "depth=" << depth << ":\n";
-	    print(this->tree, treeranges[depth], true);
-	  }
-	*/
+        /*
+        cout << "AFTER update_tree:" << endl;
+        for (uint depth=0; depth<treeranges.size(); ++depth)
+          {
+            cout << "depth=" << depth << ":\n";
+            print(this->tree, treeranges[depth], true);
+          }
+        */
 
 #if GOOPAX_DEBUG
-    scratch.fill({}, scratch_offset, scratch.size());
+        scratch.fill({}, scratch_offset, scratch.size());
 #endif
 
 #if WITH_TIMINGS
         // cout << "treecount: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
-    cout << "\nupdate_tree:\n"
-	 << "  set_sig: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
-	 << "  update_tree_1: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-	 << "  upwards: " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms" << endl
-	 << "  downwards: " << duration_cast<std::chrono::milliseconds>(t4 - t3).count() << " ms" << endl
-	 << "  reorder: " << duration_cast<std::chrono::milliseconds>(t5 - t4).count() << " ms" << endl
-	 << "  swap_particles: " << duration_cast<std::chrono::milliseconds>(t6 - t5).count() << " ms" << endl;
+        cout << "\nupdate_tree:\n"
+             << "  set_sig: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
+             << "  update_tree_1: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
+             << "  upwards: " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms" << endl
+             << "  downwards: " << duration_cast<std::chrono::milliseconds>(t4 - t3).count() << " ms" << endl
+             << "  reorder: " << duration_cast<std::chrono::milliseconds>(t5 - t4).count() << " ms" << endl
+             << "  swap_particles: " << duration_cast<std::chrono::milliseconds>(t6 - t5).count() << " ms" << endl;
 #endif
-    
-  }
+    }
 
-template <typename V> void apply_func(const resource<V>& in,
-				      resource<V>& out)
-  {
-    auto new_order = scratch.begin() + scratch_offset_new_order;
-    gpu_for_global(0, in.size(), [&](gpu_uint k)
+    template<typename V>
+    void apply_func(const resource<V>& in, resource<V>& out)
     {
-      out[k] = in[new_order[k]];
-    });
-  }
+        auto new_order = scratch.begin() + scratch_offset_new_order;
+        gpu_for_global(0, in.size(), [&](gpu_uint k) { out[k] = in[new_order[k]]; });
+    }
 
-
-  
-    cosmos(goopax_device device0, Tsize_t N, size_t max_treesize0, Tdouble max_distfac, unsigned int max_nodesize0)
-      : device(device0)
-      , num_particles(N)
-      , x(device, N)
-        , v(device, N)
+    cosmos(goopax_device device0,
+           Tsize_t N,
+           size_t max_treesize0,
+           Tdouble max_distfac,
+           unsigned int max_nodesize0,
+           backend_create_params backend_params)
+        : device(device0)
+        , num_particles(N)
+        , x(device, N, backend_params)
+        , v(device, N, backend_params)
         ,
 #if CALC_POTENTIAL
-        potential2(device, N)
+        potential(device, N, backend_params)
         ,
 #endif
-        mass(device, N)
-        , force(device, N)
-        , tmps(device, N)
+        mass(device, N, backend_params)
+        , force(device, N, backend_params)
+        , tmps(device, N, backend_params)
         , vdata(max_distfac)
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
         , tree(device, max_treesize)
-	  //, split_indices(device, max_treesize)
-	  //, partnode_indices(device, max_treesize)
+        //, split_indices(device, max_treesize)
+        //, partnode_indices(device, max_treesize)
         , surrounding_buf(device, max_treesize * num_surrounding())
-      , partnode_ranges_buf(device, MAX_DEPTH()+1)
-      , all_leaf_ranges_packed_buf(device, MAX_DEPTH()+1)
-	//, Radix(device, [](auto a, auto b) { return a.first < b.first; })
+        , partnode_ranges_buf(device, MAX_DEPTH() + 1)
+        , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
+        //, Radix(device, [](auto a, auto b) { return a.first < b.first; })
         , matter_tree(device, this->max_treesize)
-      , force_tree(device, this->max_treesize)
-      , scratch(reinterpret<buffer<Tuint>>(matter_tree)),
-	scratch_tree(reinterpret<buffer<treenode<T>>>(force_tree))
+        , force_tree(device, this->max_treesize)
+        , scratch(reinterpret<buffer<Tuint>>(matter_tree))
+        , scratch_tree(reinterpret<buffer<treenode<T>>>(force_tree))
     {
-      //this->scratch = reinterpret<buffer<Tuint>>(force_tree);
+        // this->scratch = reinterpret<buffer<Tuint>>(force_tree);
 
-      static_assert(sizeof(treenode<T>) <= sizeof(force_multipole), "force_tree too small for scratch_tree");
-      //this->scratch_tree = reinterpret<buffer<treenode<T>>>(force_tree);
-      
-      matter_tree.fill(zero, 0, 4);
+        static_assert(sizeof(treenode<T>) <= sizeof(force_multipole), "force_tree too small for scratch_tree");
+        // this->scratch_tree = reinterpret<buffer<treenode<T>>>(force_tree);
+
+        matter_tree.fill(zero, 0, 4);
         force_tree.fill(zero, 0, 4);
 
-
-	tree.fill({ .children = {0,0},
+        tree.fill({ .children = { 0, 0 },
                     .parent = 0,
                     .pbegin = 0,
                     .pend = 0,
                     .rcenter = { 0, 0, 0 },
-		    .signature = 0,
-		    .depth = 0,
+                    .signature = 0,
+                    .depth = 0,
                     .need_split = false,
                     .is_partnode = false },
                   0,
@@ -1365,30 +1394,22 @@ template <typename V> void apply_func(const resource<V>& in,
             tree[3].need_split = true;
         }
 
-	save_old_tree_data.assign(device, [this](pair<gpu_uint, gpu_uint> treerange)
-	{
-	  auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
-	  auto old_children = reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
-	  auto old_node_p = scratch.begin() + scratch_offset_old_node;
-	  
-	  gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self)
-	  {
-	    old_p_range[self] = {tree[self].pbegin, tree[self].pend};
-	    old_children[self] = tree[self].children;
-	  });
+        save_old_tree_data.assign(device, [this](pair<gpu_uint, gpu_uint> treerange) {
+            auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
+            auto old_children = reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
+            auto old_node_p = scratch.begin() + scratch_offset_old_node;
 
-	  gpu_for_global(0, tree.size(), [&](gpu_uint self)
-	  {
-	    old_node_p[self] = cond(self==3, 3, 0);
-	  });
-	});
-  
-	
-        treecount1.assign(device, [this](pair<gpu_uint, gpu_uint> treerange, gpu_uint parent_begin)
-	{
-	  gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self)
-	  {
-	    gpu_uint parent = parent_begin + (self-treerange.first)/2;
+            gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
+                old_p_range[self] = { tree[self].pbegin, tree[self].pend };
+                old_children[self] = tree[self].children;
+            });
+
+            gpu_for_global(0, tree.size(), [&](gpu_uint self) { old_node_p[self] = cond(self == 3, 3, 0); });
+        });
+
+        treecount1.assign(device, [this](pair<gpu_uint, gpu_uint> treerange, gpu_uint parent_begin) {
+            gpu_for_global(treerange.first, treerange.second, [&](gpu_uint self) {
+                gpu_uint parent = parent_begin + (self - treerange.first) / 2;
 
                 gpu_uint totnum = scratch_tree[self].pend - scratch_tree[self].pbegin;
                 for (uint si = 0; si < num_surrounding(); ++si)
@@ -1397,32 +1418,33 @@ template <typename V> void apply_func(const resource<V>& in,
                     totnum += scratch_tree[cousin].pend - scratch_tree[cousin].pbegin;
                 }
 
-		// If true, force calculation wants to go further down the tree.
+                // If true, force calculation wants to go further down the tree.
                 scratch_tree[self].need_split = (totnum > max_nodesize);
-		
+
                 scratch_tree[self].is_partnode = (!scratch_tree[self].need_split && tree[parent].need_split);
-	  });
+            });
         });
 
         treecount2.assign(
-			  device, [this](pair<gpu_uint, gpu_uint> treerange, resource<Node_memory_request<>>& node_memory_request)
-			  {
-			    Node_memory_request<gpu_uint> nmr = zero;
+            device, [this](pair<gpu_uint, gpu_uint> treerange, resource<Node_memory_request<>>& node_memory_request) {
+                Node_memory_request<gpu_uint> nmr = zero;
 
                 // Choosing loop order here in such a way that neighboring nodes in space will also be
                 // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
                 // treecount3.
                 gpu_uint group_begin = treerange.first
-		  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-						  * group_id() / num_groups()), gpu_uint(2));
+                                       + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                       * group_id() / num_groups()),
+                                                 gpu_uint(2));
                 gpu_uint group_end = treerange.first
-		  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-						  * (group_id() + 1) / num_groups()), gpu_uint(2));
+                                     + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                     * (group_id() + 1) / num_groups()),
+                                               gpu_uint(2));
 
-		group_end = min(group_end, treerange.second);
-		
+                group_end = min(group_end, treerange.second);
+
                 gpu_for_local(group_begin, group_end, [&](gpu_uint self) {
-		  //gpu_uint self = group_self + local_id();
+                    // gpu_uint self = group_self + local_id();
                     gpu_bool has_children = scratch_tree[self].need_split;
                     {
                         for (uint si = 0; si < num_surrounding(); ++si)
@@ -1436,409 +1458,300 @@ template <typename V> void apply_func(const resource<V>& in,
                     // in the vicinity.
                     scratch_tree[self].children[0] = (gpu_uint)has_children;
 
-		    Node_memory_request<gpu_bool> my =
-		      {
-			.split = scratch_tree[self].need_split,
-			.withchild = !scratch_tree[self].need_split && has_children && !scratch_tree[self].is_partnode,
-			.partnode_withchild = !scratch_tree[self].need_split && has_children && scratch_tree[self].is_partnode,
-			.partnode_leaf = !scratch_tree[self].need_split && !has_children && scratch_tree[self].is_partnode,
-			.leaf = !scratch_tree[self].need_split && !has_children && !scratch_tree[self].is_partnode
-		      };
+                    Node_memory_request<gpu_bool> my = {
+                        .split = scratch_tree[self].need_split,
+                        .withchild = !scratch_tree[self].need_split && has_children && !scratch_tree[self].is_partnode,
+                        .partnode_withchild =
+                            !scratch_tree[self].need_split && has_children && scratch_tree[self].is_partnode,
+                        .partnode_leaf =
+                            !scratch_tree[self].need_split && !has_children && scratch_tree[self].is_partnode,
+                        .leaf = !scratch_tree[self].need_split && !has_children && !scratch_tree[self].is_partnode
+                    };
 
-		    auto old = nmr;
-		    nmr += my.cast<gpu_uint>();
+                    auto old = nmr;
+                    nmr += my.cast<gpu_uint>();
                 });
 
                 nmr = work_group_reduce_add(nmr, local_size());
-		
+
                 gpu_if(local_id() == 0)
-		  {
+                {
                     // Writing memory requirements for this workgroup.
-		    node_memory_request[group_id()] = nmr;
-		  }
+                    node_memory_request[group_id()] = nmr;
+                }
             });
 
         this->node_memory_request.assign(device, treecount2.num_groups());
 
         treecount3.assign(
             device,
-            [this](pair<gpu_uint, gpu_uint> treerange, array<gpu_uint, 3> treeranges_parent_withchild_nochild, Node_memory_request<gpu_uint> memory_offset)
-	    {
-	      auto old_children = reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
-	      auto old_node_p = scratch.begin() + scratch_offset_old_node;
-	      
-	      Node_memory_request<gpu_uint> next = memory_offset + this->node_memory_request[group_id()];
-	      auto oldnext = next;
+            [this](pair<gpu_uint, gpu_uint> treerange,
+                   array<gpu_uint, 3> treeranges_parent_withchild_nochild,
+                   Node_memory_request<gpu_uint> memory_offset) {
+                auto old_children =
+                    reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
+                auto old_node_p = scratch.begin() + scratch_offset_old_node;
+
+                Node_memory_request<gpu_uint> next = memory_offset + this->node_memory_request[group_id()];
+                auto oldnext = next;
 
                 // Choosing loop order here in such a way that neighboring nodes in space will also be neighboring nodes
                 // in memory. This loop must have the same ordering in treecount2 and treecount3.
                 gpu_uint group_begin = treerange.first
-		  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-						  * group_id() / num_groups()), gpu_uint(2));
+                                       + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                       * group_id() / num_groups()),
+                                                 gpu_uint(2));
                 gpu_uint group_end = treerange.first
-		  + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-						  * (group_id() + 1) / num_groups()), gpu_uint(2));
-		
-		group_end = min(group_end, treerange.second);
+                                     + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                     * (group_id() + 1) / num_groups()),
+                                               gpu_uint(2));
 
-		const bool need_sync = (device.get_envmode() == env_CPU);
-		
-                gpu_for_local(group_begin, need_sync ? (group_begin + intceil(group_end - group_begin, (gpu_uint)local_size())) : group_end, [&](gpu_uint old_self) {
-		  //gpu_uint old_self = group_self + local_id();
-                    //gpu_bool have_child = (tree_tmp[old_self].first_child != 0);
+                group_end = min(group_end, treerange.second);
 
-		  Node_memory_request<gpu_bool> my = zero;
+                const bool need_sync = (device.get_envmode() == env_CPU);
 
-		  gpu_if(old_self < group_end || !need_sync)
-		    {
-		      gpu_bool has_children = (gpu_bool)scratch_tree[old_self].children[0];
-		      my =
-			{
-			  .split = scratch_tree[old_self].need_split,
-			  .withchild = !scratch_tree[old_self].need_split && has_children && !scratch_tree[old_self].is_partnode,
-			  .partnode_withchild = !scratch_tree[old_self].need_split && has_children && scratch_tree[old_self].is_partnode,
-			  .partnode_leaf = !scratch_tree[old_self].need_split && !has_children && scratch_tree[old_self].is_partnode,
-			  .leaf = !scratch_tree[old_self].need_split && !has_children && !scratch_tree[old_self].is_partnode
-			};
-		    }
-		  
-		  gpu_uint new_self;
+                gpu_for_local(
+                    group_begin,
+                    need_sync ? (group_begin + intceil(group_end - group_begin, (gpu_uint)local_size())) : group_end,
+                    [&](gpu_uint old_self) {
+                        // gpu_uint old_self = group_self + local_id();
+                        // gpu_bool have_child = (tree_tmp[old_self].first_child != 0);
 
-		  new_self = cond(my.split, get_index(my.split, next.split, new_self), new_self);
-		  new_self = cond(my.withchild, get_index(my.withchild, next.withchild, new_self), new_self);
-		  new_self = cond(my.partnode_withchild, get_index(my.partnode_withchild, next.partnode_withchild, new_self), new_self);
-		  new_self = cond(my.partnode_leaf, get_index(my.partnode_leaf, next.partnode_leaf, new_self), new_self);
-		  new_self = cond(my.leaf, get_index(my.leaf, next.leaf, new_self), new_self);
+                        Node_memory_request<gpu_bool> my = zero;
 
+                        gpu_if(old_self < group_end || !need_sync)
+                        {
+                            gpu_bool has_children = (gpu_bool)scratch_tree[old_self].children[0];
+                            my = { .split = scratch_tree[old_self].need_split,
+                                   .withchild = !scratch_tree[old_self].need_split && has_children
+                                                && !scratch_tree[old_self].is_partnode,
+                                   .partnode_withchild = !scratch_tree[old_self].need_split && has_children
+                                                         && scratch_tree[old_self].is_partnode,
+                                   .partnode_leaf = !scratch_tree[old_self].need_split && !has_children
+                                                    && scratch_tree[old_self].is_partnode,
+                                   .leaf = !scratch_tree[old_self].need_split && !has_children
+                                           && !scratch_tree[old_self].is_partnode };
+                        }
 
-		  gpu_if(old_self < group_end || !need_sync)
-		    {
-		      /*
-			DUMP << "\ngroup_id=" << group_id() << ", local_id=" << local_id() << ": treecount3."
-			   << "\nmy=" << my
-			   << "\nnext: " << oldnext << " -> " << next
-			   << "\nold_self=" << old_self << ", new_self=" << new_self
-			   << "\ntree[" << new_self << "]=" << tree[new_self]
-			   << "\nsetting tree[" << new_self << "].parent=" << parent_begin << " + (" << old_self << "-" <<  treerange.first << ")/2 = " << tree[new_self].parent << endl;
-		      */
-		      tree[new_self] = scratch_tree[old_self];
-		      tree[new_self].children = {};
-		      tree[new_self].parent = treeranges_parent_withchild_nochild[0] + (old_self - treerange.first)/2;
+                        gpu_uint new_self;
 
-		      gpu_if(tree[new_self].parent >= 2u)
-			{
-			  get_children_p(tree.begin() + tree[new_self].parent)[old_self%2] = new_self;
-			  old_node_p[new_self] = reinterpret<gpu_type<Tuint*>>(old_children + old_node_p[tree[new_self].parent])[old_self%2];
-			}
-		    }
-		});
+                        new_self = cond(my.split, get_index(my.split, next.split, new_self), new_self);
+                        new_self = cond(my.withchild, get_index(my.withchild, next.withchild, new_self), new_self);
+                        new_self = cond(my.partnode_withchild,
+                                        get_index(my.partnode_withchild, next.partnode_withchild, new_self),
+                                        new_self);
+                        new_self =
+                            cond(my.partnode_leaf, get_index(my.partnode_leaf, next.partnode_leaf, new_self), new_self);
+                        new_self = cond(my.leaf, get_index(my.leaf, next.leaf, new_self), new_self);
 
-		gpu_for_global(treeranges_parent_withchild_nochild[1], treeranges_parent_withchild_nochild[2], [&](gpu_uint k)
-		{
-		  tree[k].children = {0,0};
-		});
+                        gpu_if(old_self < group_end || !need_sync)
+                        {
+                            /*
+                          DUMP << "\ngroup_id=" << group_id() << ", local_id=" << local_id() << ": treecount3."
+                             << "\nmy=" << my
+                             << "\nnext: " << oldnext << " -> " << next
+                             << "\nold_self=" << old_self << ", new_self=" << new_self
+                             << "\ntree[" << new_self << "]=" << tree[new_self]
+                             << "\nsetting tree[" << new_self << "].parent=" << parent_begin << " + (" << old_self <<
+                          "-" <<  treerange.first << ")/2 = " << tree[new_self].parent << endl;
+                            */
+                            tree[new_self] = scratch_tree[old_self];
+                            tree[new_self].children = {};
+                            tree[new_self].parent =
+                                treeranges_parent_withchild_nochild[0] + (old_self - treerange.first) / 2;
+
+                            gpu_if(tree[new_self].parent >= 2u)
+                            {
+                                get_children_p(tree.begin() + tree[new_self].parent)[old_self % 2] = new_self;
+                                old_node_p[new_self] = reinterpret<gpu_type<Tuint*>>(
+                                    old_children + old_node_p[tree[new_self].parent])[old_self % 2];
+                            }
+                        }
+                    });
+
+                gpu_for_global(treeranges_parent_withchild_nochild[1],
+                               treeranges_parent_withchild_nochild[2],
+                               [&](gpu_uint k) { tree[k].children = { 0, 0 }; });
             },
             this->treecount2.local_size(), // thread numbers must be the same as in treecount2.
             this->treecount2.global_size());
 
-	    for (Tuint mod3=0; mod3< 3; ++mod3)
-	      {
-		treecount4[mod3].assign(device,
-						[this, mod3](
-                                 pair<gpu_uint, gpu_uint> treerange,
-				 gpu_uint treebegin_next,
-                                 gpu_uint depth,
-                                 gpu_T halflen_sublevel,
-								     resource<treenode<T>>& dest_tree, resource<Vector<T, 3>>& x,
-			  resource<Vector<T, 3>>& v,
-			  resource<T>& mass)
-			  {
-			    //gpu_ostream DUMP(cout);
-                              gpu_for_global(treerange.first, treerange.second, [&](gpu_uint parent) {
-
-				const gpu_uint first_child = treebegin_next + 2*(parent - treerange.first);
-				    
-				gpu_uint end;
-				  {
-				    
-				    auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
-				    auto old_children = reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
-				    auto old_node_p = scratch.begin() + scratch_offset_old_node;
-
-				    gpu_if(old_children[old_node_p[parent]][0] != 0)
-				      {
-					gpu_assert(tree[parent].pbegin == old_p_range[old_node_p[parent]].first);
-					gpu_assert(tree[parent].pend == old_p_range[old_node_p[parent]].second);
-					end = old_p_range[old_children[old_node_p[parent]][0]].second;
-					//old_node_p[first_child] = old_children[old_node_p[parent]][0];
-					//old_node_p[first_child+1] = old_children[old_node_p[parent]][1];
-					//DUMP << "gid=" << global_id() << "setting old_node_p[" << first_child << "]=" << old_node_p[first_child]
-					//<< " and old_node_p[" << first_child+1 << "]=" << old_node_p[first_child+1]
-					//<< endl;
-				      }
-				    gpu_else
-				      {
-					// No data from previous tree. Need to sort particles to the two children
-					auto a = tree[parent].pbegin;
-					auto b = tree[parent].pend;
-
-					gpu_if(a != b)
-					  {
-					    gpu_while(true)
-					      {
-						gpu_while (a != b)
-						  {
-						    gpu_if(rot(x[a], mod3)[0] >= tree[parent].rcenter[0])
-						      {
-							gpu_break();
-						      }
-						    ++a;
-						  }
-						gpu_while (a != b)
-						  {
-						    gpu_if (rot(x[b-1], mod3)[0] < tree[parent].rcenter[0])
-						      {
-							gpu_break();
-						      }
-						    --b;
-						  }
-						gpu_if(a == b)
-						  {
-						    gpu_break();
-						  }
-						--b;
-						gpu_assert(a < b);
-						swap(v[a], v[b]);
-						swap(x[a], x[b]);
-						swap(mass[a], mass[b]);
-						++a;
-					      }
-					  }
-					end = a;
-				      }
-				  }
-				  
-                                  dest_tree[first_child].pbegin = tree[parent].pbegin;
-                                  dest_tree[first_child].pend = end;
-                                  dest_tree[first_child + 1].pbegin = end;
-                                  dest_tree[first_child + 1].pend = tree[parent].pend;
-
-                                  for (Tuint childnum : { 0, 1 })
-                                  {
-                                      gpu_uint self = first_child + childnum;
-                                      Vector<gpu_T, 3> rcenter = tree[parent].rcenter;
-                                      rcenter[0] += (childnum == 0 ? -halflen_sublevel : halflen_sublevel);
-				      dest_tree[self].rcenter = rot(rcenter);
-				      dest_tree[self].signature = tree[parent].signature * 2 + childnum;
-				      /*
-					DUMP << "treecount4: tree[" << parent << "].rcenter=" << tree[parent].rcenter
-					   << " -> dest_tree[" << self << "].rcenter=" << dest_tree[self].rcenter
-					   << ", halflen_sublevel=" << halflen_sublevel
-					   << endl;
-				      */
-				      dest_tree[self].depth = static_cast<gpu_uint16>(depth+1);
-                                  }
-                              });
-                          });
-	      }
-
-	make_tree_clear_leaf_childs.assign(device,
-					   [this](pair<gpu_uint, gpu_uint> treerange_leaf)
-					   {
-					     gpu_for_global(treerange_leaf.first, treerange_leaf.second, [&](gpu_uint k)
-					     {
-					       tree[k].children = {0,0};
-					     });
-
-					   });
-	
-	
-	for (bool use_scratch : {false, true})
-	  {
-	    make_surrounding[use_scratch].assign(device, [this, use_scratch](pair<gpu_uint, gpu_uint> treerange_parent, pair<gpu_uint, gpu_uint> treerange, gpu_T halflen) {
-	      resource dest_tree(use_scratch ? this->scratch_tree : this->tree);
-	      
-	      gpu_for_global(treerange_parent.first, treerange_parent.second, [&](gpu_uint parent) {
-
-		auto get_child = [&](gpu_uint node, Tuint child)
-		{
-		  gpu_assert(node < treerange.first);
-		  if (use_scratch)
-		    {
-		      return cond(node - treerange_parent.first < treerange_parent.second - treerange_parent.first,
-				  treerange.first + 2*(node - treerange_parent.first) + child,
-				  0u);
-		    }
-		  else
-		    {
-		      return tree[node].children[child];
-		    }
-		};
-		
-                for (Tuint c = 0; c < 2; ++c)
-		  {
-                    gpu_uint self = get_child(parent, c);
-		    gpu_assert(self >= treerange.first);
-		    gpu_assert(self < treerange.second);
-		    
-                    for (Tuint si = 0; si < num_surrounding(); ++si)
-		      {
-                        Vector<Tint, 3> childvec = vdata.vicinity_vec[si];
-                        Vector<Tint, 3> parentvec = vdata.child2parent(childvec, c);
-                        auto parent_si_p = ranges::find(vdata.vicinity_vec, parentvec);
-
-                        if (parent_si_p == vdata.vicinity_vec.end())
-			  {
-                            if (parentvec.squaredNorm() != 0)
-			      {
-                                cout << "BAD: parentvec=" << parentvec << " not 0. Perhaps max_distfac is too small."
-                                     << endl;
-                                throw std::runtime_error("BAD: parentvec not 0.");
-			      }
-                            // adding sibling
-                            surrounding_link(self, si) = get_child(parent, 1 - c);
-			  }
-                        else
-			  {
-                            gpu_uint uncle = surrounding_link(parent, parent_si_p - vdata.vicinity_vec.begin());
-                            surrounding_link(self, si) = get_child(uncle, (childvec[2] + c) % 2);
-			  }
-			
-			gpu_assert(surrounding_link(self, si) < 2u
-                                   || (vdata.make_real(childvec, halflen * 2)
-                                       - (dest_tree[surrounding_link(self, si)].rcenter - dest_tree[self].rcenter))
-				   .squaredNorm()
-				   < 1E-4f * halflen);
-		      }
-		  }
-	      });
-	    });
-	  }
-
-
-	handle_particles_direct.assign(device, [this](const resource<Vector<T, 3>>& x,
-						      const resource<T>& mass,
-						      resource<Vector<T, 3>>& force,
-						      resource<T>& potential)
-	{
-	  multi_level_loop(partnode_ranges_buf,
-			   group_id(),
-			   num_groups(),
-			   [&](gpu_uint self)
-			   {
-		  gpu_assert(this->tree[self].is_partnode);
-		  gpu_assert(!this->tree[self].need_split && this->tree[this->tree[self].parent].need_split);
-
-		  local_mem<Tuint> other_indices(4*this->max_nodesize);
-
-		  gpu_for_local(this->tree[self].pbegin, this->tree[self].pend, [&](gpu_uint p) {
-		    other_indices[p - this->tree[self].pbegin] = p;
-		  });
-		  gpu_uint num_other = this->tree[self].pend - this->tree[self].pbegin;
-
-		  gpu_for_local(0, intceil(this->num_surrounding(), local_size()), [&](gpu_uint si) {
-
-		    gpu_uint num = 0;
-		    gpu_uint other;
-		    gpu_if(si < this->num_surrounding())
-		      {
-			other = this->surrounding_link(self, si);
-			num = this->tree[other].pend - this->tree[other].pbegin;
-		      }
-		    num_other += work_group_scan_exclusive_add(num);
-		    gpu_if(si < this->num_surrounding())
-		      {
-			gpu_for(this->tree[other].pbegin, this->tree[other].pend, [&](gpu_uint p) {
-			  other_indices[num_other++] = p;
-			});
-		      }
-		    num_other = shuffle(num_other, local_size() - 1, local_size());
-		  });
-
-		  local_barrier(memory::threadgroup);
-
-		  auto run = [&](gpu_uint pa0, uint par, uint ls) {
-		    gpu_uint gid = local_id() / ls;
-		    // uint ng = local_size() / ls;
-
-		    gpu_uint lid = local_id() % ls;
-		    // gpu_uint pa0 = begin + par * gid;
-
-		    {
-		      vector<Vector<gpu_T, 3>> F(par, { 0, 0, 0 });
-		      vector<gpu_T> P(par, 0);
-
-		      gpu_for(lid, num_other, ls, [&](gpu_uint i) {
-			allow_preload();
-			gpu_uint pb = other_indices[i];
-			for (uint k = 0; k < par; ++k)
-			  {
-			    gpu_uint pa = pa0 + k;
-			    gpu_if(pa != pb)
-			      {
-				allow_preload();
-				const Vector<gpu_T, 3> dist = x[pb] - x[pa];
-				F[k] += dist
-				  * (mass[pb] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
-				     * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
-
-				P[k] += -(mass[pb] * pow<-1, 2>(dist.squaredNorm() + 1E-20f));
-			      }
-			  }
-		      });
-
-		      for (uint k = 0; k < par; ++k)
-			{
-			  F[k] = work_group_reduce_add(F[k], ls);
-#if CALC_POTENTIAL
-			  P[k] = work_group_reduce_add(P[k], ls);
-#endif
-			}
-		      gpu_if(lid == 0)
-			{
-			  for (uint k = 0; k < par; ++k)
-			    {
-			      gpu_uint pa = pa0 + k;
-			      force[pa] = F[k];
-			      gpu_assert(isfinite(force[pa].squaredNorm()));
-#if CALC_POTENTIAL
-			      potential[pa] = P[k];
-#endif
-			    }
-			}
-		    }
-		  };
-
-		  gpu_uint pbegin = this->tree[self].pbegin;
-		  gpu_uint pend = this->tree[self].pend;
-
-		  auto run_loop = [&](Tuint par, Tuint ls) {
-		    gpu_uint gid = local_id() / ls;
-		    Tuint stepsize = par * local_size() / ls;
-		    gpu_for(pbegin + gid * par, pend - (pend - pbegin) % stepsize, stepsize, [&](gpu_uint pa) {
-		      run(pa, par, ls);
-		    });
-		    pbegin = pend - (pend - pbegin) % stepsize;
-		  };
-
-		  // run_loop(16, 1);
-		  run_loop(4, 1);
-		  // run_loop(4, local_size() / 16);
-		  run_loop(4, local_size() / 8);
-		  run_loop(4, local_size() / 4);
-		  run_loop(4, local_size() / 2);
-		  run_loop(4, local_size());
-		  run_loop(2, local_size());
-		  run_loop(1, local_size());
-
-		  local_barrier(memory::threadgroup);
-			   });
-	});
-
-	    
-	surrounding_buf.fill(0, 0, 4*num_surrounding());
+        for (Tuint mod3 = 0; mod3 < 3; ++mod3)
         {
-	  buffer_map tree(this->tree);
+            treecount4[mod3].assign(
+                device,
+                [this, mod3](pair<gpu_uint, gpu_uint> treerange,
+                             gpu_uint treebegin_next,
+                             gpu_uint depth,
+                             gpu_T halflen_sublevel,
+                             resource<treenode<T>>& dest_tree,
+                             resource<Vector<T, 3>>& x,
+                             resource<Vector<T, 3>>& v,
+                             resource<T>& mass) {
+                    // gpu_ostream DUMP(cout);
+                    gpu_for_global(treerange.first, treerange.second, [&](gpu_uint parent) {
+                        const gpu_uint first_child = treebegin_next + 2 * (parent - treerange.first);
+
+                        gpu_uint end;
+                        {
+
+                            auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin()
+                                                                                          + scratch_offset_old_p_range);
+                            auto old_children =
+                                reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
+                            auto old_node_p = scratch.begin() + scratch_offset_old_node;
+
+                            gpu_if(old_children[old_node_p[parent]][0] != 0)
+                            {
+                                gpu_assert(tree[parent].pbegin == old_p_range[old_node_p[parent]].first);
+                                gpu_assert(tree[parent].pend == old_p_range[old_node_p[parent]].second);
+                                end = old_p_range[old_children[old_node_p[parent]][0]].second;
+                                // old_node_p[first_child] = old_children[old_node_p[parent]][0];
+                                // old_node_p[first_child+1] = old_children[old_node_p[parent]][1];
+                                // DUMP << "gid=" << global_id() << "setting old_node_p[" << first_child << "]=" <<
+                                // old_node_p[first_child]
+                                //<< " and old_node_p[" << first_child+1 << "]=" << old_node_p[first_child+1]
+                                //<< endl;
+                            }
+                            gpu_else
+                            {
+                                // No data from previous tree. Need to sort particles to the two children
+                                auto a = tree[parent].pbegin;
+                                auto b = tree[parent].pend;
+
+                                gpu_if(a != b)
+                                {
+                                    gpu_while(true)
+                                    {
+                                        gpu_while(a != b)
+                                        {
+                                            gpu_if(rot(x[a], mod3)[0] >= tree[parent].rcenter[0])
+                                            {
+                                                gpu_break();
+                                            }
+                                            ++a;
+                                        }
+                                        gpu_while(a != b)
+                                        {
+                                            gpu_if(rot(x[b - 1], mod3)[0] < tree[parent].rcenter[0])
+                                            {
+                                                gpu_break();
+                                            }
+                                            --b;
+                                        }
+                                        gpu_if(a == b)
+                                        {
+                                            gpu_break();
+                                        }
+                                        --b;
+                                        gpu_assert(a < b);
+                                        swap(v[a], v[b]);
+                                        swap(x[a], x[b]);
+                                        swap(mass[a], mass[b]);
+                                        ++a;
+                                    }
+                                }
+                                end = a;
+                            }
+                        }
+
+                        dest_tree[first_child].pbegin = tree[parent].pbegin;
+                        dest_tree[first_child].pend = end;
+                        dest_tree[first_child + 1].pbegin = end;
+                        dest_tree[first_child + 1].pend = tree[parent].pend;
+
+                        for (Tuint childnum : { 0, 1 })
+                        {
+                            gpu_uint self = first_child + childnum;
+                            Vector<gpu_T, 3> rcenter = tree[parent].rcenter;
+                            rcenter[0] += (childnum == 0 ? -halflen_sublevel : halflen_sublevel);
+                            dest_tree[self].rcenter = rot(rcenter);
+                            dest_tree[self].signature = tree[parent].signature * 2 + childnum;
+                            /*
+                          DUMP << "treecount4: tree[" << parent << "].rcenter=" << tree[parent].rcenter
+                             << " -> dest_tree[" << self << "].rcenter=" << dest_tree[self].rcenter
+                             << ", halflen_sublevel=" << halflen_sublevel
+                             << endl;
+                            */
+                            dest_tree[self].depth = static_cast<gpu_uint16>(depth + 1);
+                        }
+                    });
+                });
+        }
+
+        make_tree_clear_leaf_childs.assign(device, [this](pair<gpu_uint, gpu_uint> treerange_leaf) {
+            gpu_for_global(
+                treerange_leaf.first, treerange_leaf.second, [&](gpu_uint k) { tree[k].children = { 0, 0 }; });
+        });
+
+        for (bool use_scratch : { false, true })
+        {
+            make_surrounding[use_scratch].assign(
+                device,
+                [this, use_scratch](
+                    pair<gpu_uint, gpu_uint> treerange_parent, pair<gpu_uint, gpu_uint> treerange, gpu_T halflen) {
+                    resource dest_tree(use_scratch ? this->scratch_tree : this->tree);
+
+                    gpu_for_global(treerange_parent.first, treerange_parent.second, [&](gpu_uint parent) {
+                        auto get_child = [&](gpu_uint node, Tuint child) {
+                            gpu_assert(node < treerange.first);
+                            if (use_scratch)
+                            {
+                                return cond(node - treerange_parent.first
+                                                < treerange_parent.second - treerange_parent.first,
+                                            treerange.first + 2 * (node - treerange_parent.first) + child,
+                                            0u);
+                            }
+                            else
+                            {
+                                return tree[node].children[child];
+                            }
+                        };
+
+                        for (Tuint c = 0; c < 2; ++c)
+                        {
+                            gpu_uint self = get_child(parent, c);
+                            gpu_assert(self >= treerange.first);
+                            gpu_assert(self < treerange.second);
+
+                            for (Tuint si = 0; si < num_surrounding(); ++si)
+                            {
+                                Vector<Tint, 3> childvec = vdata.vicinity_vec[si];
+                                Vector<Tint, 3> parentvec = vdata.child2parent(childvec, c);
+                                auto parent_si_p = ranges::find(vdata.vicinity_vec, parentvec);
+
+                                if (parent_si_p == vdata.vicinity_vec.end())
+                                {
+                                    if (parentvec.squaredNorm() != 0)
+                                    {
+                                        cout << "BAD: parentvec=" << parentvec
+                                             << " not 0. Perhaps max_distfac is too small." << endl;
+                                        throw std::runtime_error("BAD: parentvec not 0.");
+                                    }
+                                    // adding sibling
+                                    surrounding_link(self, si) = get_child(parent, 1 - c);
+                                }
+                                else
+                                {
+                                    gpu_uint uncle = surrounding_link(parent, parent_si_p - vdata.vicinity_vec.begin());
+                                    surrounding_link(self, si) = get_child(uncle, (childvec[2] + c) % 2);
+                                }
+
+                                gpu_assert(
+                                    surrounding_link(self, si) < 2u
+                                    || (vdata.make_real(childvec, halflen * 2)
+                                        - (dest_tree[surrounding_link(self, si)].rcenter - dest_tree[self].rcenter))
+                                               .squaredNorm()
+                                           < 1E-4f * halflen);
+                            }
+                        }
+                    });
+                });
+        }
+
+        surrounding_buf.fill(0, 0, 4 * num_surrounding());
+        {
+            buffer_map tree(this->tree);
             tree[2].parent = 0;
             tree[3].parent = 0;
         }
@@ -1867,366 +1780,435 @@ template <typename V> void apply_func(const resource<V>& in,
             });
         });
 
-        apply_vec2.assign(device, [this](const resource<Vector<T, 3>>& in, resource<Vector<T, 3>>& out)
-	{
-	  apply_func(in, out);
-	});
-        apply_scalar2.assign(device, [this](const resource<T>& in, resource<T>& out)
-	{
-	  apply_func(in, out);
-	});
+        apply_vec2.assign(
+            device, [this](const resource<Vector<T, 3>>& in, resource<Vector<T, 3>>& out) { apply_func(in, out); });
+        apply_scalar2.assign(device, [this](const resource<T>& in, resource<T>& out) { apply_func(in, out); });
 
-        verify.assign(device,
-                      [this](const resource<Vector<T, 3>>& x,
-			     const resource<Vector<T, 3>>& force,
-			     const resource<T>& mass,
-			     const resource<T>& potential,
-#if CALC_POTENTIAL
-                          gather_add<double>& poterr,
-#endif
-                          gpu_uint pnum) -> gather_add<double> {
-                          gpu_double ret = 0;
-#if CALC_POTENTIAL
-                          poterr = 0;
-#endif
-                          gpu_for_global(0, pnum, [&](gpu_uint p) {
-                              gpu_uint a = gpu_uint(gpu_uint64(x.size()) * p / pnum);
-                              Vector<gpu_double, 3> F = { 0, 0, 0 };
-                              gpu_double P = 0;
-                              gpu_for(0, x.size(), [&](gpu_uint b) {
-                                  Vector<gpu_double, 3> dist = (x[b] - x[a]).template cast<gpu_double>();
-                                  gpu_if(a != b)
-                                  {
-                                      F += mass[b] * dist * pow<-3, 2>(dist.squaredNorm() + 1E-20);
-                                      P += -mass[b] * pow<-1, 2>(dist.squaredNorm() + 1E-20);
-                                  }
-                              });
-                              ret += (force[a].template cast<gpu_double>() - F).squaredNorm();
-#if CALC_POTENTIAL
-                              poterr += pow2(potential[a] - P);
-#endif
-                          });
-                          return ret;
-                      });
-
-	
-
-	
         for (unsigned int mod3 = 0; mod3 < 3; ++mod3)
         {
 
-	  upwards[mod3].assign(device, [mod3, this](array<gpu_uint, 3> treeranges_withchild_nochild, gpu_T scale, const resource<Vector<T, 3>>& x, const resource<T>& mass)
-	  {
-	    gpu_for_global(treeranges_withchild_nochild[0], treeranges_withchild_nochild[1], [&](gpu_uint t)
-	    {
-	      gpu_matter_multipole Msum_r = zero;
-	      
-	      for (int child = 0; child < 2; ++child)
-		{
-		  const gpu_uint child_id = this->tree[t].children[child];
-		  const gpu_matter_multipole Mcr = matter_tree[child_id];
-		  Vector<double, 3> shift_r = { (1.0 - (2.0 * child)), 0, 0 };
-		  gpu_matter_multipole Mr = Mcr.rot(-1).scale_ext(pow<-1, 3>(2.0)).shift_ext(shift_r);
-		  Msum_r += Mr;
-		}
-	      matter_tree[t] = Msum_r;
-	    });
+            upwards[mod3].assign(
+                device,
+                [mod3, this](array<gpu_uint, 3> treeranges_withchild_nochild,
+                             gpu_T scale,
+                             const resource<Vector<T, 3>>& x,
+                             const resource<T>& mass) {
+                    gpu_for_global(treeranges_withchild_nochild[0], treeranges_withchild_nochild[1], [&](gpu_uint t) {
+                        gpu_matter_multipole Msum_r = zero;
 
-	    gpu_for_global(treeranges_withchild_nochild[1], treeranges_withchild_nochild[2], [&](gpu_uint t)
-	    {
-	      gpu_matter_multipole Msum_r = zero;
-	      
-	      gpu_for(this->tree[t].pbegin, this->tree[t].pend, [&](gpu_uint p) {
-		allow_preload();
-		Msum_r += gpu_matter_multipole::from_particle(((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval(), mass[p]);
-	      });
-	      matter_tree[t] = Msum_r;
-	    });
-	  });
-	  
-	  handle_particles_from_multipole[mod3].assign(
-						       device, [mod3, this](pair<gpu_uint, gpu_uint> partnode_range, gpu_T scale, const resource<Vector<T, 3>>& x,
-	      resource<Vector<T, 3>>& force,
-	      resource<T>& potential) {
-                    gpu_for_group(partnode_range.first, partnode_range.second, [&](gpu_uint self) {
-                        gpu_assert(this->tree[self].is_partnode);
-                        gpu_assert(!this->tree[self].need_split && this->tree[this->tree[self].parent].need_split);
+                        for (int child = 0; child < 2; ++child)
+                        {
+                            const gpu_uint child_id = this->tree[t].children[child];
+                            const gpu_matter_multipole Mcr = matter_tree[child_id];
+                            Vector<double, 3> shift_r = { (1.0 - (2.0 * child)), 0, 0 };
+                            gpu_matter_multipole Mr = Mcr.rot(-1).scale_ext(pow<-1, 3>(2.0)).shift_ext(shift_r);
+                            Msum_r += Mr;
+                        }
+                        matter_tree[t] = Msum_r;
+                    });
 
-                        gpu_for_local(this->tree[self].pbegin, this->tree[self].pend, [&](gpu_uint pa) {
-			  allow_preload();
-                            gpu_T halflen = pow<1, 3>(2.f) / scale;
-                            Vector<gpu_T, 3> halflen3 = vdata.make_real({ 1, 1, 1 }, halflen);
-                            for (uint k = 0; k < 3; ++k)
-                            {
-                                gpu_assert(abs((rot(x[pa], mod3) - this->tree[self].rcenter)[k])
-                                           < halflen3[k] * 1.001f);
-                            }
+                    gpu_for_global(treeranges_withchild_nochild[1], treeranges_withchild_nochild[2], [&](gpu_uint t) {
+                        gpu_matter_multipole Msum_r = zero;
 
-                            Vector<gpu_T, 3> F =
-                                rot(force_tree[self].calc_force(
-                                        ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval()),
-                                    -(Tint)mod3)
-                                * pow2(scale);
-
-#if CALC_POTENTIAL
-                            gpu_T P = force_tree[self].calc_loc_potential(
-                                          ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval())
-                                      * scale;
-#endif
-
-                            force[pa] += F;
-                            gpu_assert(isfinite(force[pa].squaredNorm()));
-#if CALC_POTENTIAL
-                            potential[pa] += P;
-#endif
+                        gpu_for(this->tree[t].pbegin, this->tree[t].pend, [&](gpu_uint p) {
+                            allow_preload();
+                            Msum_r += gpu_matter_multipole::from_particle(
+                                ((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval(), mass[p]);
                         });
+                        matter_tree[t] = Msum_r;
                     });
                 });
         }
 
-        downwards2.assign(device, [this](pair<gpu_uint, gpu_uint> split_range) {
-            gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
-                gpu_assert(this->tree[parent].need_split);
+        for (bool with_potential : { false, true })
+        {
+            for (unsigned int mod3 = 0; mod3 < 3; ++mod3)
+            {
+                handle_particles_from_multipole[with_potential][mod3].assign(
+                    device,
+                    [with_potential, mod3, this](pair<gpu_uint, gpu_uint> partnode_range,
+                                                 gpu_T scale,
+                                                 const resource<Vector<T, 3>>& x,
+                                                 resource<Vector<T, 3>>& force,
+                                                 resource<T>& potential) {
+                        gpu_for_group(partnode_range.first, partnode_range.second, [&](gpu_uint self) {
+                            gpu_assert(this->tree[self].is_partnode);
+                            gpu_assert(!this->tree[self].need_split && this->tree[this->tree[self].parent].need_split);
 
-                array<gpu_force_multipole, 2> new_multipole;
-                for (int c = 0; c < 2; ++c)
-                {
-                    Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
-                    new_multipole[c] = force_tree[parent].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
-		    gpu_assert(is_initialized(new_multipole[c].template get<0>().A[0]));
-                }
+                            gpu_for_local(this->tree[self].pbegin, this->tree[self].pend, [&](gpu_uint pa) {
+                                allow_preload();
+                                gpu_T halflen = pow<1, 3>(2.f) / scale;
+                                Vector<gpu_T, 3> halflen3 = vdata.make_real({ 1, 1, 1 }, halflen);
+                                for (uint k = 0; k < 3; ++k)
+                                {
+                                    gpu_assert(abs((rot(x[pa], mod3) - this->tree[self].rcenter)[k])
+                                               < halflen3[k] * 1.001f);
+                                }
 
-                Tuint count = 0;
-                for (Tuint parent_si = 0; parent_si < this->num_surrounding() + 1; ++parent_si)
-                {
-                    Vector<Tint, 3> unclevec;
-                    if (parent_si < this->num_surrounding())
+                                Vector<gpu_T, 3> F =
+                                    rot(force_tree[self].calc_force(
+                                            ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval()),
+                                        -(Tint)mod3)
+                                    * pow2(scale);
+
+#if CALC_POTENTIAL
+                                gpu_T P = force_tree[self].calc_loc_potential(
+                                              ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval())
+                                          * scale;
+#endif
+
+                                force[pa] += F;
+                                gpu_assert(isfinite(force[pa].squaredNorm()));
+#if CALC_POTENTIAL
+                                if (with_potential)
+                                {
+                                    potential[pa] += P;
+                                }
+#endif
+                            });
+                        });
+                    });
+            }
+
+            handle_particles_direct[with_potential].assign(
+                device,
+                [this, with_potential](const resource<Vector<T, 3>>& x,
+                                       const resource<T>& mass,
+                                       resource<Vector<T, 3>>& force,
+                                       resource<T>& potential) {
+                    multi_level_loop(partnode_ranges_buf, group_id(), num_groups(), [&](gpu_uint self) {
+                        gpu_assert(this->tree[self].is_partnode);
+                        gpu_assert(!this->tree[self].need_split && this->tree[this->tree[self].parent].need_split);
+
+                        local_mem<Tuint> other_indices(4 * this->max_nodesize);
+
+                        gpu_for_local(this->tree[self].pbegin, this->tree[self].pend, [&](gpu_uint p) {
+                            other_indices[p - this->tree[self].pbegin] = p;
+                        });
+                        gpu_uint num_other = this->tree[self].pend - this->tree[self].pbegin;
+
+                        gpu_for_local(0, intceil(this->num_surrounding(), local_size()), [&](gpu_uint si) {
+                            gpu_uint num = 0;
+                            gpu_uint other;
+                            gpu_if(si < this->num_surrounding())
+                            {
+                                other = this->surrounding_link(self, si);
+                                num = this->tree[other].pend - this->tree[other].pbegin;
+                            }
+                            num_other += work_group_scan_exclusive_add(num);
+                            gpu_if(si < this->num_surrounding())
+                            {
+                                gpu_for(this->tree[other].pbegin, this->tree[other].pend, [&](gpu_uint p) {
+                                    other_indices[num_other++] = p;
+                                });
+                            }
+                            num_other = shuffle(num_other, local_size() - 1, local_size());
+                        });
+
+                        local_barrier(memory::threadgroup);
+
+                        auto run = [&](gpu_uint pa0, uint par, uint ls) {
+                            gpu_uint gid = local_id() / ls;
+                            // uint ng = local_size() / ls;
+
+                            gpu_uint lid = local_id() % ls;
+                            // gpu_uint pa0 = begin + par * gid;
+
+                            {
+                                vector<Vector<gpu_T, 3>> F(par, { 0, 0, 0 });
+                                vector<gpu_T> P(par, 0);
+
+                                gpu_for(lid, num_other, ls, [&](gpu_uint i) {
+                                    allow_preload();
+                                    gpu_uint pb = other_indices[i];
+                                    for (uint k = 0; k < par; ++k)
+                                    {
+                                        gpu_uint pa = pa0 + k;
+                                        gpu_if(pa != pb)
+                                        {
+                                            allow_preload();
+                                            const Vector<gpu_T, 3> dist = x[pb] - x[pa];
+                                            F[k] += dist
+                                                    * (mass[pb] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
+                                                       * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
+
+                                            P[k] += -(mass[pb] * pow<-1, 2>(dist.squaredNorm() + 1E-20f));
+                                        }
+                                    }
+                                });
+
+                                for (uint k = 0; k < par; ++k)
+                                {
+                                    F[k] = work_group_reduce_add(F[k], ls);
+#if CALC_POTENTIAL
+                                    if (with_potential)
+                                    {
+                                        P[k] = work_group_reduce_add(P[k], ls);
+                                    }
+#endif
+                                }
+                                gpu_if(lid == 0)
+                                {
+                                    for (uint k = 0; k < par; ++k)
+                                    {
+                                        gpu_uint pa = pa0 + k;
+                                        force[pa] = F[k];
+                                        gpu_assert(isfinite(force[pa].squaredNorm()));
+#if CALC_POTENTIAL
+                                        if (with_potential)
+                                        {
+                                            potential[pa] = P[k];
+                                        }
+#endif
+                                    }
+                                }
+                            }
+                        };
+
+                        gpu_uint pbegin = this->tree[self].pbegin;
+                        gpu_uint pend = this->tree[self].pend;
+
+                        auto run_loop = [&](Tuint par, Tuint ls) {
+                            gpu_uint gid = local_id() / ls;
+                            Tuint stepsize = par * local_size() / ls;
+                            gpu_for(pbegin + gid * par, pend - (pend - pbegin) % stepsize, stepsize, [&](gpu_uint pa) {
+                                run(pa, par, ls);
+                            });
+                            pbegin = pend - (pend - pbegin) % stepsize;
+                        };
+
+                        // run_loop(16, 1);
+                        run_loop(4, 1);
+                        // run_loop(4, local_size() / 16);
+                        run_loop(4, local_size() / 8);
+                        run_loop(4, local_size() / 4);
+                        run_loop(4, local_size() / 2);
+                        run_loop(4, local_size());
+                        run_loop(2, local_size());
+                        run_loop(1, local_size());
+
+                        local_barrier(memory::threadgroup);
+                    });
+                });
+
+            downwards2[with_potential].assign(device, [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
+                gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
+                    gpu_assert(this->tree[parent].need_split);
+
+                    array<gpu_force_multipole, 2> new_multipole;
+                    for (int c = 0; c < 2; ++c)
                     {
-                        unclevec = vdata.vicinity_vec[parent_si];
+                        Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
+                        new_multipole[c] = force_tree[parent].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
+                        gpu_assert(is_initialized(new_multipole[c].template get<0>().A[0]));
                     }
-                    else
+
+                    Tuint count = 0;
+                    for (Tuint parent_si = 0; parent_si < this->num_surrounding() + 1; ++parent_si)
                     {
-                        unclevec = { 0, 0, 0 };
+                        Vector<Tint, 3> unclevec;
+                        if (parent_si < this->num_surrounding())
+                        {
+                            unclevec = vdata.vicinity_vec[parent_si];
+                        }
+                        else
+                        {
+                            unclevec = { 0, 0, 0 };
+                        }
+
+                        for (int c = 0; c < 2; ++c)
+                        {
+                            for (int c2 = 0; c2 < 2; ++c2)
+                            {
+                                Vector<Tint, 3> cousinvec = vdata.parent2child(unclevec, c2 - c);
+                                if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
+                                    && cousinvec.squaredNorm() != 0)
+                                {
+                                    gpu_uint cousin = this->tree[(parent_si == this->num_surrounding()
+                                                                      ? parent
+                                                                      : this->surrounding_link(parent, parent_si))]
+                                                          .children[c2];
+                                    new_multipole[c] +=
+                                        matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)));
+
+                                    if (!with_potential)
+                                    {
+                                        // Marking the first order multipole as unused. This should speed up the
+                                        // calculations if the potential is not required.
+                                        new_multipole[c].template get<0>().A[0] = {};
+                                    }
+                                    ++count;
+                                }
+                            }
+                        }
                     }
+
+                    assert(count == (this->num_surrounding() + 1) * 2);
 
                     for (int c = 0; c < 2; ++c)
                     {
-                        for (int c2 = 0; c2 < 2; ++c2)
-                        {
-                            Vector<Tint, 3> cousinvec = vdata.parent2child(unclevec, c2 - c);
-                            // cout << "cousinvec=" << cousinvec;
-                            if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
-                                && cousinvec.squaredNorm() != 0)
-                            {
-                                // cout << ". updating";
-                                gpu_uint cousin = this->tree[(parent_si == this->num_surrounding()
-                                                                  ? parent
-                                                                  : this->surrounding_link(parent, parent_si))]
-				  .children[c2];
-                                // gpu_if(matter_tree[cousin].template get<0>().A[0] != 2)
-                                //{
-                                // allow_preload();
-                                new_multipole[c] +=
-                                    matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)));
-				gpu_assert(is_initialized(new_multipole[c].template get<0>().A[0]));
-                                //}
-                                ++count;
-                            }
-                            // cout << endl;
-                        }
+                        gpu_uint self = this->tree[parent].children[c];
+                        force_tree[self] = new_multipole[c];
                     }
-                }
+                });
+            });
+            cout << "created downwards." << endl;
+        }
 
-                assert(count == (this->num_surrounding() + 1) * 2);
+        update_tree_set_nodelink.assign(device, [this]() {
+            auto nodelink = scratch.begin() + scratch_offset_nodelink;
 
-                for (int c = 0; c < 2; ++c)
+            multi_level_loop(all_leaf_ranges_packed_buf, global_id(), global_size(), [&](gpu_uint self) {
+                gpu_for(this->tree[self].pbegin, this->tree[self].pend, [&](gpu_uint p) { nodelink[p] = self; });
+            });
+        });
+
+        update_tree_1.assign(device, [this](const resource<Vector<T, 3>>& x) {
+            auto next_p = scratch.begin() + scratch_offset_next_p;
+            // auto num_removed = scratch.begin() + scratch_offset_num_removed;
+            auto particle_list = scratch.begin() + scratch_offset_particle_list;
+            auto nodelink = scratch.begin() + scratch_offset_nodelink;
+
+            gpu_for_global(0, x.size(), [&](gpu_uint p) {
+                gpu_uint node = nodelink[p];
+                gpu_uint depth = this->tree[node].depth;
+                gpu_signature_t new_sig = calc_sig<signature_t>(x[p], MAX_DEPTH());
+                // plist[p].first = new_sig;
+
+                gpu_signature_t shifted_sig = new_sig >> ((Tuint)sizeof(signature_t) * 8 - depth);
+                gpu_signature_t sig_change = shifted_sig ^ tree[node].signature;
+
+                gpu_if(sig_change != 0)
                 {
-                    gpu_uint self = this->tree[parent].children[c];
-                    force_tree[self] = new_multipole[c];
+                    gpu_signature_t bit = (gpu_signature_t(1) << (2 * Tuint(sizeof(signature_t) * 8) - 1
+                                                                  - countl_zero(sig_change) - depth));
+
+                    sig_change /= 2;
+                    gpu_uint i = this->tree[node].parent;
+
+                    // Going up to the last node that contains both the old and the new signature.
+                    gpu_while(sig_change != 0)
+                    {
+                        i = this->tree[i].parent;
+                        sig_change /= 2;
+                    }
+
+                    gpu_uint child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
+                    // Going down to the new leaf.
+                    gpu_while(child != 0)
+                    {
+                        i = child;
+                        bit >>= 1;
+                        child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
+                    }
+
+                    // Add to linked list of particles that are to be added to node i.
+                    particle_list[p] = atomic_xchg(next_p[i], p, std::memory_order_relaxed);
                 }
             });
         });
-        cout << "created downwards." << endl;
 
+        update_tree_upwards.assign(
+            device, [this](pair<gpu_uint, gpu_uint> leaf_range, pair<gpu_uint, gpu_uint> withchild_range) {
+                // gpu_ostream DUMP(cout);
+                // auto num_added = scratch.begin();
+                auto next_p = scratch.begin() + scratch_offset_next_p;
+                // auto num_removed = scratch.begin() + scratch_offset_num_removed;
+                auto particle_list = scratch.begin() + scratch_offset_particle_list;
+                auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
 
-	update_tree_set_nodelink.assign(device, [this]()
-	{
-	  auto nodelink = scratch.begin() + scratch_offset_nodelink;
-	  
-	  multi_level_loop(all_leaf_ranges_packed_buf,
-			   global_id(),
-			   global_size(),
-			   [&](gpu_uint self)
-			   {
-			     gpu_for(this->tree[self].pbegin,
-				     this->tree[self].pend,
-				     [&](gpu_uint p)
-				     {
-				       nodelink[p] = self;
-				     });
-			   });
-	});
-    
-            update_tree_1.assign(device, [this](const resource<Vector<T, 3>>& x)
-	    {
-	      auto next_p = scratch.begin() + scratch_offset_next_p;
-	      //auto num_removed = scratch.begin() + scratch_offset_num_removed;
-	      auto particle_list = scratch.begin() + scratch_offset_particle_list;
-	      auto nodelink = scratch.begin() + scratch_offset_nodelink;
+                gpu_for_global(leaf_range.first, leaf_range.second, [&](gpu_uint self) {
+                    gpu_uint num_p = 0;
 
-	      gpu_for_global(0, x.size(), [&](gpu_uint p)
-	      {
-		gpu_uint node = nodelink[p];
-		gpu_uint depth = this->tree[node].depth;
-		gpu_signature_t new_sig = calc_sig<signature_t>(x[p], MAX_DEPTH());
-		//plist[p].first = new_sig;
-		
-		gpu_signature_t shifted_sig = new_sig >> ((Tuint)sizeof(signature_t)*8-depth);
-		gpu_signature_t sig_change = shifted_sig ^ tree[node].signature;
-		
-		gpu_if(sig_change != 0)
-		  {
-		    gpu_signature_t bit = (gpu_signature_t(1) << (2*Tuint(sizeof(signature_t)*8) - 1 - countl_zero(sig_change) - depth));
-			   
-		    sig_change /= 2;
-		    gpu_uint i = this->tree[node].parent;
+                    // First count how many of the previous particles are still in this node.
+                    gpu_for(tree[self].pbegin, tree[self].pend, [&](gpu_uint p) {
+                        num_p += (particle_list[p] == 0xfffffffe);
+                    });
 
-		    // Going up to the last node that contains both the old and the new signature.
-		    gpu_while(sig_change != 0)
-		      {
-			i = this->tree[i].parent;
-			sig_change /= 2;
-		      }
+                    // Now count new particles from other nodes.
+                    gpu_uint p = next_p[self];
+                    gpu_while(p != ~0u)
+                    {
+                        p = particle_list[p];
+                        ++num_p;
+                    }
+                    new_num_p[self] = num_p;
+                });
 
-		    gpu_uint child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
-		    // Going down to the new leaf.
-		    gpu_while(child != 0)
-		      {
-			i = child;
-			bit >>= 1;
-			child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
-		      }
-		      
-		    // Add to linked list of particles that are to be added to node i.
-		    particle_list[p] = atomic_xchg(next_p[i], p, std::memory_order_relaxed);
-		  }
-	      });
-	    });
+                gpu_for_global(withchild_range.first, withchild_range.second, [&](gpu_uint self) {
+                    gpu_uint num_p = 0;
+                    for (Tuint c = 0; c < 2; ++c)
+                    {
+                        gpu_uint child = this->tree[self].children[c];
+                        num_p += new_num_p[child];
+                    }
+                    new_num_p[self] = num_p;
 
-	    update_tree_upwards.assign(device, [this](pair<gpu_uint, gpu_uint> leaf_range, pair<gpu_uint, gpu_uint> withchild_range)
-	    {
-	      //gpu_ostream DUMP(cout);
-	      //auto num_added = scratch.begin();
-	      auto next_p = scratch.begin() + scratch_offset_next_p;
-	      //auto num_removed = scratch.begin() + scratch_offset_num_removed;
-	      auto particle_list = scratch.begin() + scratch_offset_particle_list;
-	      auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
+                    // DUMP << "upwards_split. depth=" << this->tree[self].depth << ", new_num_p[" << self << "]=" <<
+                    // new_num_p[self] << "\n";
+                });
+            });
 
-	      gpu_for_global(leaf_range.first, leaf_range.second, [&](gpu_uint self)
-	      {
-		gpu_uint num_p = 0;
+        update_tree_downwards.assign(device, [this](pair<gpu_uint, gpu_uint> treerange_parent) {
+            // gpu_ostream DUMP(cout);
+            auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
+            auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
 
-		// First count how many of the previous particles are still in this node.
-		gpu_for(tree[self].pbegin, tree[self].pend, [&](gpu_uint p)
-		{
-		  num_p += (particle_list[p] == 0xfffffffe);
-		});
+            gpu_for_global(treerange_parent.first, treerange_parent.second, [&](gpu_uint parent) {
+                gpu_uint pbegin = this->tree[parent].pbegin;
+                for (uint child = 0; child < 2; ++child)
+                {
+                    gpu_uint self = tree[parent].children[child];
+                    old_p_range[self] = { tree[self].pbegin, tree[self].pend };
+                    this->tree[self].pbegin = pbegin;
+                    pbegin += new_num_p[self];
+                    this->tree[self].pend = pbegin;
+                    /*
+                      DUMP << "downwards. depth=" << this->tree[self].depth
+                     << ", self=" << self
+                     << ", new_num_p=" << new_num_p[self]
+                     << ", pbegin=" << this->tree[self].pbegin << ", pend=" << this->tree[self].pend << "\n";
+                    */
+                }
+            });
+        });
 
-		// Now count new particles from other nodes.
-		gpu_uint p = next_p[self];
-		gpu_while(p != ~0u)
-		  {
-		    p = particle_list[p];
-		    ++num_p;
-		  }
-		new_num_p[self] = num_p;
-	      });
+        const Tuint scratch_end = scratch_offset_old_node + tree.size();
 
-	      gpu_for_global(withchild_range.first, withchild_range.second, [&](gpu_uint self)
-	      {
-		gpu_uint num_p = 0;
-		for (Tuint c=0; c<2; ++c)
-		  {
-		    gpu_uint child = this->tree[self].children[c];
-		    num_p += new_num_p[child];
-		  }
-		new_num_p[self] = num_p;
-		
-		//DUMP << "upwards_split. depth=" << this->tree[self].depth << ", new_num_p[" << self << "]=" << new_num_p[self] << "\n";
-	      });
-	    });
+        cout << "scratch usage: " << scratch_end << " / " << scratch.size() << endl;
+        if (scratch_end > scratch.size())
+        {
+            cout << "scratch size to small." << endl;
+            exit(1);
+        }
 
-	    update_tree_downwards.assign(device, [this](pair<gpu_uint, gpu_uint> treerange_parent)
-	    {
-	      //gpu_ostream DUMP(cout);
-	      auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
-	      auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
-	      
-	      gpu_for_global(treerange_parent.first, treerange_parent.second, [&](gpu_uint parent)
-	      {
-		gpu_uint pbegin = this->tree[parent].pbegin;
-		for (uint child=0; child<2; ++child)
-		  {
-		    gpu_uint self = tree[parent].children[child];
-		    old_p_range[self] = {tree[self].pbegin, tree[self].pend};
-		    this->tree[self].pbegin = pbegin;
-		    pbegin += new_num_p[self];
-		    this->tree[self].pend = pbegin;
-		    /*
-		      DUMP << "downwards. depth=" << this->tree[self].depth
-			 << ", self=" << self
-			 << ", new_num_p=" << new_num_p[self]
-			 << ", pbegin=" << this->tree[self].pbegin << ", pend=" << this->tree[self].pend << "\n";
-		    */
-		  }
-	      });
-	    });
+        update_tree_reorder_particles.assign(device, [this]() {
+            auto particle_list = scratch.begin() + scratch_offset_particle_list;
+            auto next_p = scratch.begin() + scratch_offset_next_p;
+            auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
+            auto new_order = scratch.begin() + scratch_offset_new_order;
 
-	    const Tuint scratch_end = scratch_offset_old_node + tree.size();
-	    
-	    cout << "scratch usage: " << scratch_end << " / " << scratch.size() << endl;
-	    if (scratch_end > scratch.size())
-	      {
-		cout << "scratch size to small." << endl;
-		exit(1);
-	      }
-	    
-  
+            multi_level_loop(all_leaf_ranges_packed_buf, global_id(), global_size(), [&](gpu_uint self) {
+                gpu_uint new_pbegin = this->tree[self].pbegin;
+                gpu_uint new_pend = this->tree[self].pend;
 
-	    
-	    update_tree_reorder_particles.assign(device, [this]()
-	    {
-	      auto particle_list = scratch.begin() + scratch_offset_particle_list;
-	      auto next_p = scratch.begin() + scratch_offset_next_p;
-	      auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
-	      auto new_order = scratch.begin() + scratch_offset_new_order;
-	      
-	      multi_level_loop(all_leaf_ranges_packed_buf,
-			       global_id(),
-			       global_size(),
-			       [&](gpu_uint self)
-			       {
-				 gpu_uint new_pbegin = this->tree[self].pbegin;
-				 gpu_uint new_pend = this->tree[self].pend;
-		
-				 gpu_uint dest = new_pbegin;
+                gpu_uint dest = new_pbegin;
 
-				 gpu_for(old_p_range[self].first, old_p_range[self].second, [&](gpu_uint p)
-				 {
-				   gpu_if(particle_list[p] == 0xfffffffe)
-				     {
-				       new_order[dest] = p;
-				       ++dest;
-				     }
-				 });
-				 gpu_uint p = next_p[self];
-				 gpu_while(p != ~0u)
-				   {
-				     new_order[dest] = p;
-				     ++dest;
-				     p = particle_list[p];
-				   }
-			       });
-	    });
+                gpu_for(old_p_range[self].first, old_p_range[self].second, [&](gpu_uint p) {
+                    gpu_if(particle_list[p] == 0xfffffffe)
+                    {
+                        new_order[dest] = p;
+                        ++dest;
+                    }
+                });
+                gpu_uint p = next_p[self];
+                gpu_while(p != ~0u)
+                {
+                    new_order[dest] = p;
+                    ++dest;
+                    p = particle_list[p];
+                }
+            });
+        });
     }
 };

@@ -99,35 +99,28 @@ int main(int argc, char** argv)
     {
         using T = debugtype<double>;
 
-#if NEW_MULTIPOLES
-        {
-            test<multipole<T>>();
-            test<multipole<T, T>>();
-            test<multipole<T, T, T>>();
-            test<multipole<T, T, T, T>>();
-            test<multipole<T, T, T, T, T>>();
-        }
-#else
-        {
-            // test<multipole_old<T, 0>>();
-            // test<multipole_old<T, 1>>();
-            test<multipole_old<T, 2>>();
-            // test<multipole_old<T, 3>>();
-            // test<multipole_old<T, 4>>();
-        }
-#endif
+        test<multipole<T>>();
+        test<multipole<T, T>>();
+        test<multipole<T, T, T>>();
+        test<multipole<T, T, T, T>>();
+        test<multipole<T, T, T, T, T>>();
+
         return 0;
     }
     else
     {
         unique_ptr<sdl_window> window = sdl_window::create("fmm nbody",
                                                            { 1024, 768 },
-                                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
-                                                           static_cast<goopax::envmode>(env_ALL & ~env_VULKAN));
+                                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
+#if GOOPAX_VERSION_ID < 50802
+                                                           ,
+                                                           static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
+#endif
+        );
         goopax_device device = window->device;
 
 #if GOOPAX_DEBUG
-        // Increasing number of threads to be able to check for race conditions.
+        // Increasing number of threads to have meaningful race condition checks.
         device.force_global_size(192);
 #endif
 
@@ -135,6 +128,18 @@ int main(int argc, char** argv)
         particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
         buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES()); // OpenGL buffer
         buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+
+        backend_create_params params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT
+                                                                   | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                                                   | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
+                                                                   | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
+
+        // buffer<Vector<Tfloat, 3>> x(window->device, NUM_PARTICLES(), params);
+        // buffer<Tfloat> color(window->device, NUM_PARTICLES(), params);
+        //  ranges::fill(buffer_map(color), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
+
+        VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
 #elif WITH_OPENGL
         opengl_buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES()); // OpenGL buffer
         opengl_buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
@@ -147,41 +152,40 @@ int main(int argc, char** argv)
 
         size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000;
 
-	cosmos<T, MULTIPOLE_ORDER> Cosmos(device, NUM_PARTICLES(), tree_size, MAX_DISTFAC(), MAX_NODESIZE());
+        cosmos<T, MULTIPOLE_ORDER> Cosmos(device, NUM_PARTICLES(), tree_size, MAX_DISTFAC(), MAX_NODESIZE(), params);
 
         if (argc >= 2)
         {
             Cosmos.make_IC(argv[1]);
         }
 
-        // cosmos<T, MULTIPOLE_ORDER> Cosmos(device, NUM_PARTICLES(), MAX_DISTFAC());
-
-        kernel set_colors(device, [&](const resource<Vector<T, 3>>& cx) {
-            gpu_for_global(0, x.size(), [&](gpu_uint k) {
-                color[k] = ::color(static_cast<gpu_float>(Cosmos.potential2[k]));
-                x[k] = cx[k].cast<gpu_float>();
-                // Tweaking z coordinate to use potential for depth testing.
-                // Particles are displayed according to their x and y coordinates.
-                // If multiple particles are drawn at the same pixel, the one with the
-                // highest potential will be shown.
-                x[k][2] = static_cast<gpu_float>(-Cosmos.potential2[k]) * 0.01f;
+        /*        kernel set_colors(device, [&](const resource<Vector<T, 3>>& cx) {
+                gpu_for_global(0, x.size(), [&](gpu_uint k) {
+              color[k] = Cosmos.potential2[k];//::color(static_cast<gpu_float>(Cosmos.potential2[k]));
+                    x[k] = cx[k].cast<gpu_float>();
+                    // Tweaking z coordinate to use potential for depth testing.
+                    // Particles are displayed according to their x and y coordinates.
+                    // If multiple particles are drawn at the same pixel, the one with the
+                    // highest potential will be shown.
+                    //x[k][2] = -0.9f + static_cast<gpu_float>(-Cosmos.potential2[k]) * 0.001f;
+                });
             });
-        });
+        */
 
         auto last_fps_time = steady_clock::now();
         size_t last_fps_step = 0;
 
         bool quit = false;
         constexpr uint make_tree_every = 4;
-	constexpr uint render_every = 4;
-	
-	Cosmos.make_tree();
-	
-	Cosmos.movefunc(0.5f * DT(), Cosmos.v, Cosmos.x);
+        constexpr uint render_every = 4;
+
+        Cosmos.make_tree();
+
+        Cosmos.movefunc(0.5f * DT(), Cosmos.v, Cosmos.x);
 
         for (size_t step = 0; !quit; ++step)
         {
-	  cout << "step=" << step << endl;
+            cout << "step=" << step << endl;
             while (auto e = window->get_event())
             {
                 if (e->type == SDL_EVENT_QUIT)
@@ -202,23 +206,23 @@ int main(int argc, char** argv)
                 }
             }
 
-	    Cosmos.update_tree();
+            Cosmos.update_tree();
 
             if (step % make_tree_every == 0)
-	      {
-		cout << "reconstructing tree" << endl;
+            {
+                cout << "reconstructing tree" << endl;
                 Cosmos.make_tree();
-	      }
+            }
 
-	      //cout << "x=" << Cosmos->x << endl;
-	    //cout << "v=" << Cosmos->v << endl;
-	    //cout << "mass=" << Cosmos->mass << endl;
-            Cosmos.compute_force();
+            // cout << "x=" << Cosmos->x << endl;
+            // cout << "v=" << Cosmos->v << endl;
+            // cout << "mass=" << Cosmos->mass << endl;
+            Cosmos.compute_force(step % render_every == 0);
 
             if (PRECISION_TEST() && step / make_tree_every % 128 == 0)
             {
                 Cosmos.precision_test();
-                //exit(0);
+                // exit(0);
             }
 
             Cosmos.kick(DT(), Cosmos.force, Cosmos.v);
@@ -228,32 +232,34 @@ int main(int argc, char** argv)
             {
                 stringstream title;
                 Tdouble rate = (step - last_fps_step) / chrono::duration<double>(now - last_fps_time).count();
-                title << "N-body. N=" << x.size() << ", step " << step << ", " << rate
+                title << "N-body. N=" << Cosmos.x.size() << ", step " << step << ", " << rate
                       << " fps, device=" << device.name();
                 window->set_title(title.str());
                 last_fps_step = step;
                 last_fps_time = now;
             }
 
-	    if (step % render_every == 0)
-	      {
-		Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
-		set_colors(Cosmos.x);
+            if (step % render_every == 0)
+            {
+                Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
+                // set_colors(Cosmos.x);
 
 #if WITH_METAL
-		Renderer.render(x);
+                Renderer.render(x);
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+                Renderer.render(Cosmos.x, Cosmos.potential);
 #elif WITH_OPENGL
-		render(window->window, x, &color);
-		SDL_GL_SwapWindow(window->window);
+                render(window->window, x, &color);
+                SDL_GL_SwapWindow(window->window);
 #else
-		cout << "x=" << x << endl;
+                cout << "x=" << x << endl;
 #endif
-		Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
-	      }
-	    else
-	      {
-		Cosmos.movefunc(DT(), Cosmos.v, Cosmos.x);
-	      }
+                Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
+            }
+            else
+            {
+                Cosmos.movefunc(DT(), Cosmos.v, Cosmos.x);
+            }
         }
         return 0;
     }
