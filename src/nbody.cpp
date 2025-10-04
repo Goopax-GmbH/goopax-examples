@@ -3,10 +3,13 @@
    Simple N-body example program
  */
 
-#include "common/particle.hpp"
 #include <SDL3/SDL_main.h>
 #include <chrono>
+#include <goopax_draw/particle.hpp>
 #include <goopax_draw/window_sdl.h>
+#if WITH_VULKAN
+#include <goopax_draw/window_vulkan.h>
+#endif
 #include <goopax_extra/param.hpp>
 #include <random>
 
@@ -68,18 +71,38 @@ int main(int argc, char** argv)
 
     unique_ptr<sdl_window> window = sdl_window::create("nbody",
                                                        { 1024, 768 },
-                                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
-                                                       static_cast<goopax::envmode>(env_ALL & ~env_VULKAN));
+                                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
+#if GOOPAX_VERSION_ID < 50802
+                                                       ,
+                                                       static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
+#endif
+    );
     goopax_device device = window->device;
 
 #if WITH_METAL
+    buffer<Vector3<float>> x(device, N);
+    buffer<Vector3<float>> x2(device, N);
     particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
-    buffer<Vector3<float>> x(device, N);  // OpenGL buffer
-    buffer<Vector3<float>> x2(device, N); // OpenGL buffer
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+
+    backend_create_params params = {
+        .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                  | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
+    };
+
+    buffer<Vector<float, 3>> x(window->device, N, params);
+    buffer<Vector<float, 3>> x2(window->device, N, params);
+    buffer<Vector<float, 4>> colors(window->device, N, params);
+    ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
+
+    VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
 #else
-    opengl_buffer<Vector3<float>> x(device, N);  // OpenGL buffer
-    opengl_buffer<Vector3<float>> x2(device, N); // OpenGL buffer
+    opengl_buffer<Vector3<float>> x(device, N);
+    opengl_buffer<Vector3<float>> x2(device, N);
 #endif
+
+    buffer<Vector3<float>> v(device, N);
+    init(x, v);
 
     kernel CalculateForce(
         device,
@@ -92,14 +115,11 @@ int main(int argc, char** argv)
                 F += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
             });
 
-            v[i] += F * (dt * mass);
+            v[i] += F * (dt * mass) * 0;
             xnew[i] = x[i] + v[i] * dt;
         },
         0,
         N);
-
-    buffer<Vector3<float>> v(device, N); // and the velocities.
-    init(x, v);
 
     bool quit = false;
     while (!quit)
@@ -145,6 +165,8 @@ int main(int argc, char** argv)
 
 #if WITH_METAL
         Renderer.render(x);
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+        Renderer.render(x, colors);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);
