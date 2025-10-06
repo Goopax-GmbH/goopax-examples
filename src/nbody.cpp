@@ -92,16 +92,9 @@ int main(int argc, char** argv)
 
     buffer<Vector<float, 3>> x(window->device, N, params);
     buffer<Vector<float, 3>> x2(window->device, N, params);
-    buffer<Vector<float, 4>> colors(window->device, N, params);
+    buffer<float> potential(window->device, N, params);
     {
-        buffer_map c(colors);
-        for (uint k = 0; k < c.size(); ++k)
-        {
-            c[k] = { pow2(sin(float(k) * 2 * M_PI / c.size())),
-                     pow2(sin(float(k + c.size() / 3) * 2 * M_PI / c.size())),
-                     pow2(sin(float(k + 2 * c.size() / 3) * 2 * M_PI / c.size())),
-                     1.f };
-        }
+        potential.fill(-1);
     }
     // ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
 
@@ -176,7 +169,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
         Renderer.render(x);
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        Renderer.render(x, colors);
+        Renderer.render(x, potential);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);

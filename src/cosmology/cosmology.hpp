@@ -21,6 +21,7 @@
 #include <set>
 
 #define MULTIPOLE_ORDER 4
+constexpr unsigned min_tree_depth = 4;
 
 using Eigen::Vector;
 using Eigen::Vector3;
@@ -601,6 +602,144 @@ struct cosmos
 
     // radix_sort<pair<signature_t, Tuint>, signature_t> Radix;
 
+    void make_tree_base()
+    {
+        cout << "make_tree_base" << endl;
+        surrounding_buf.fill(0, 0, 4 * num_surrounding());
+        {
+            buffer_map tree(this->tree, 0, 2 + (1 << (min_tree_depth + 1)));
+            tree[2].parent = 0;
+            tree[3].parent = 0;
+
+            double level_halflen = halflen;
+            Tuint offset = 3;
+            for (Tuint depth = 0; depth <= min_tree_depth; ++depth)
+            {
+                pair<Tuint, Tuint> treerange = { offset, offset + (1 << depth) };
+                treeranges.push_back(treerange);
+                split_ranges.push_back(treerange);
+                withchild_ranges.push_back({ treerange.second, treerange.second });
+                partnode_withchild_ranges.push_back({ treerange.second, treerange.second });
+                partnode_leaf_ranges.push_back({ treerange.second, treerange.second });
+                leaf_ranges.push_back({ treerange.second, treerange.second });
+                partnode_ranges.push_back({ treerange.second, treerange.second });
+                treeranges_withchild_nochild.push_back({ treerange.first, treerange.second, treerange.second });
+
+                cout << "depth=" << depth << ", treerange=" << treerange << endl;
+
+                for (Tuint self = treerange.first; self < treerange.second; ++self)
+                {
+                    tree[self].need_split = true;
+                    tree[self].is_partnode = false;
+                    tree[self].children = { 2 * self - 2, 2 * self - 1 };
+                    tree[self].parent = self == 3 ? Tuint(0) : (self + 2) / 2;
+
+                    Tuint parent = tree[self].parent;
+                    Tuint c = self % 2;
+                    // cout << "self=" << self << ", parent=" << parent << ", c=" << c << endl;
+                    // cout << "now: node[" << self << "]=" << tree[self] << endl;
+
+                    Vector<T, 3> rcenter = tree[parent].rcenter;
+                    if (self != 3)
+                    {
+                        rcenter[0] += (c == 0 ? -level_halflen : level_halflen);
+                        tree[self].signature = tree[parent].signature * 2 + c;
+                    }
+                    tree[self].rcenter = rot(rcenter);
+                    tree[self].depth = depth;
+
+                    tree[self].pbegin = 0;
+                    tree[self].pend = 0;
+                }
+
+                level_halflen *= pow(2.0, -1.0 / 3);
+                offset = treerange.second;
+            }
+        }
+
+        // cout << "root:\n";
+        // print(this->tree, { 3, 4 });
+
+        for (Tuint depth = 1; depth < min_tree_depth; ++depth)
+        {
+            make_surrounding[false](treeranges[depth - 1], treeranges[depth], halflen * pow(2.0, -1.0 / 3 * depth))
+                .wait();
+        }
+    }
+
+    void make_initial_tree()
+    {
+        make_tree_base();
+        make_tree();
+
+        cout << "Assigning particles to some initial nodes." << endl;
+
+        {
+            kernel assign(device, [&]() {
+                gpu_for_global(
+                    partnode_leaf_ranges.back().first, partnode_leaf_ranges.back().second, [&](gpu_uint self) {
+                        tree[self].pbegin = static_cast<gpu_uint>(
+                            gpu_size_t(self - partnode_leaf_ranges.back().first) * x.size()
+                            / (partnode_leaf_ranges.back().second - partnode_leaf_ranges.back().first));
+                        tree[self].pend = static_cast<gpu_uint>(
+                            gpu_size_t(self - partnode_leaf_ranges.back().first + 1) * x.size()
+                            / (partnode_leaf_ranges.back().second - partnode_leaf_ranges.back().first));
+                    });
+            });
+
+            cout << "Calling assign. partnode_leaf_ranges.back()=" << partnode_leaf_ranges.back() << endl;
+            assign();
+        }
+
+        /*
+
+
+        cout << "Setting all nodelinks to " << all_leaf_ranges_packed.back().first << endl;
+
+        scratch.fill(all_leaf_ranges_packed.back().first,
+             scratch_offset_nodelink,
+             scratch_offset_nodelink+x.size());
+        */
+
+        cout << "BEFORE update:" << endl;
+        for (uint depth = 0; depth < treeranges.size(); ++depth)
+        {
+            cout << "depth=" << depth << ":\n";
+            print(this->tree, treeranges[depth], true);
+        }
+
+        update_tree();
+
+        cout << "AFTER update:" << endl;
+        for (uint depth = 0; depth < treeranges.size(); ++depth)
+        {
+            cout << "depth=" << depth << ":\n";
+            print(this->tree, treeranges[depth], true);
+        }
+        /*
+
+
+        cout << "And now setting all nodelinks to " << all_leaf_ranges_packed.back().first+1 << endl;
+
+        scratch.fill(all_leaf_ranges_packed.back().first,
+             scratch_offset_nodelink,
+             scratch_offset_nodelink+x.size());
+
+        update_tree();
+
+
+        cout << "AFTER second update:" << endl;
+        for (uint depth=0; depth<treeranges.size(); ++depth)
+          {
+        cout << "depth=" << depth << ":\n";
+        print(this->tree, treeranges[depth], true);
+          }
+
+        */
+
+        cout << "Tree initialized." << endl;
+    }
+
     void make_tree()
     {
         cout << "make_tree" << endl;
@@ -620,21 +759,18 @@ struct cosmos
             save_old_tree_data({ 0, treeranges.back().second });
         }
 
-        Tuint treesize = 1;
-        Tuint treeoffset = 3;
         // Tuint split_index_offset = 0;
         // Tuint partnode_index_offset = 0;
 
-        this->treeranges.clear();
+        this->treeranges.resize(min_tree_depth);
+        this->split_ranges.resize(min_tree_depth);
+        this->withchild_ranges.resize(min_tree_depth);
+        this->partnode_withchild_ranges.resize(min_tree_depth);
+        this->partnode_leaf_ranges.resize(min_tree_depth);
+        this->leaf_ranges.resize(min_tree_depth);
+        treeranges_withchild_nochild.resize(min_tree_depth);
 
-        this->split_ranges.clear();
-        this->withchild_ranges.clear();
-        this->partnode_withchild_ranges.clear();
-        this->partnode_leaf_ranges.clear();
-        this->leaf_ranges.clear();
-        treeranges_withchild_nochild.clear();
-
-        partnode_ranges.clear();
+        partnode_ranges.resize(min_tree_depth);
         all_leaf_ranges_packed.clear();
 
 #if WITH_TIMINGS
@@ -642,26 +778,43 @@ struct cosmos
         auto t1 = steady_clock::now();
 #endif
 
+        Tuint treesize = (1u << min_tree_depth);
+        Tuint treeoffset = 2 + (1 << (min_tree_depth));
+
 #if GOOPAX_DEBUG
         scratch_tree.fill({});
-        surrounding_buf.fill({}, 4 * num_surrounding(), surrounding_buf.size());
+        surrounding_buf.fill({}, treeoffset * num_surrounding(), surrounding_buf.size());
 #endif
 
-        this->scratch_tree.copy(this->tree, 4, 0, 0);
-        // this->surrounding_buf.fill(0, 0, 4*num_surrounding());
-#if GOOPAX_DEBUG
+        scratch_tree.fill({ .children = { 0, 0 },
+                            .parent = 0,
+                            .pbegin = 0,
+                            .pend = 0,
+                            .rcenter = { 0, 0, 0 },
+                            .signature = 0,
+                            .depth = 0,
+                            .need_split = false,
+                            .is_partnode = false },
+                          0,
+                          2);
+
+        this->scratch_tree.copy(this->tree, treesize, treeoffset, treeoffset);
+
+        cout << "BEFORE make_tree:" << endl;
+        for (uint depth = 0; depth < treeranges.size(); ++depth)
         {
-            buffer_map scratch_tree(this->scratch_tree);
-            scratch_tree[3].children = {};
+            cout << "depth=" << depth << ":\n";
+            print(this->tree, treeranges[depth], true);
         }
-#endif
 
         {
-            double level_halflen = halflen;
-            Tuint parent_begin = 0;
-            for (Tuint depth = 0; depth < MAX_DEPTH(); ++depth)
+            double level_halflen = halflen * pow<-(int)min_tree_depth, 3>(2.0);
+            // Tuint parent_begin = 0;
+
+            for (Tuint depth = min_tree_depth; depth < MAX_DEPTH(); ++depth)
             {
                 pair<Tuint, Tuint> treerange = { treeoffset, treeoffset + treesize };
+                cout << "depth=" << depth << ", treerange=" << treerange << endl;
 
                 this->treeranges.push_back(treerange);
 
@@ -673,26 +826,21 @@ struct cosmos
                 auto g0 = steady_clock::now();
 #endif
 
-                if (depth != 0)
-                {
-                    make_surrounding[true](
-                        { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
-                        treerange,
-                        level_halflen);
-                }
+                make_surrounding[true](
+                    { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
+                    treerange,
+                    level_halflen)
+                    .wait();
 
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g1 = steady_clock::now();
 #endif
-                if (depth != 0)
-                {
-                    // cout << "calling treecount1. treerange=" << treerange << endl;
-                    this->treecount1(treerange, parent_begin);
-                }
+                cout << "calling treecount1. treerange=" << treerange << endl;
+                this->treecount1(treerange, treeranges[depth - 1].first).wait();
 
-                // cout << "after treecount1: scratch_tree:\n";
-                // print(this->scratch_tree, treerange);
+                //cout << "after treecount1: scratch_tree:\n";
+                //print(this->scratch_tree, treerange);
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -708,26 +856,18 @@ struct cosmos
                 device.wait_all();
                 auto g5 = steady_clock::now();
 #endif
-
                 Node_memory_request<Tuint> memory_offset;
                 {
                     Node_memory_request<Tuint> sum = zero;
-                    // Tuint next_split_index = split_index_offset;
-                    // Tuint next_partnode_index = partnode_index_offset;
-                    buffer_map node_memory_request(this->node_memory_request);
-                    // Tuint next_index = treerange.second / 2;
-                    // Tuint num_partnode = 0;
-                    // Tuint num_split = 0;
-                    // Tuint num_other = 0;
-                    // cout << "node_memory_requests:\n";
-                    for (auto& n : node_memory_request)
                     {
-                        auto tmp = n;
-                        n = sum;
-                        sum += tmp;
-                        // cout << "n=" << tmp << ", sum=" << sum << endl;
+                        buffer_map node_memory_request(this->node_memory_request);
+                        for (auto& n : node_memory_request)
+                        {
+                            auto tmp = n;
+                            n = sum;
+                            sum += tmp;
+                        }
                     }
-                    // cout << endl;
 
                     split_ranges.push_back({ treeoffset, treeoffset + sum.split });
                     treeoffset += sum.split;
@@ -764,9 +904,9 @@ struct cosmos
 
                     /*
                       cout << "treeoffset=" << treeoffset << ", treerange=" << treerange
-                     << ", sum=" << sum
-                     << ", memory_offset=" << memory_offset
-                     << endl;
+                      << ", sum=" << sum
+                      << ", memory_offset=" << memory_offset
+                      << endl;
                     */
                 }
 
@@ -784,13 +924,11 @@ struct cosmos
                 // cout << "after treecount3: tree:\n";
                 // print(this->tree, treerange);
 
-                if (depth != 0)
-                {
-                    make_surrounding[false](
-                        { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
-                        treerange,
-                        level_halflen);
-                }
+                make_surrounding[false](
+                    { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
+                    treerange,
+                    level_halflen)
+                    .wait();
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -828,7 +966,7 @@ struct cosmos
                 // cout << "after treecount4\n";
                 // print(this->tree, treerange);
 
-                parent_begin = treerange.first;
+                // parent_begin = treerange.first;
 
                 if (treesize == 0)
                     break;
@@ -1219,9 +1357,11 @@ struct cosmos
 
     void update_tree()
     {
-#if GOOPAX_DEBUG
-        scratch.fill({}, scratch_offset, scratch.size());
-#endif
+        /*
+      #if GOOPAX_DEBUG
+          scratch.fill({}, scratch_offset, scratch.size());
+  #endif
+        */
 
         scratch.fill(~0u, scratch_offset_next_p, scratch_offset_next_p + this->treeranges.back().second);
         scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + x.size());
@@ -1387,12 +1527,6 @@ struct cosmos
                     .is_partnode = false },
                   0,
                   4);
-
-        {
-            buffer_map tree(this->tree, 0, 4);
-            tree[3].pend = num_particles;
-            tree[3].need_split = true;
-        }
 
         save_old_tree_data.assign(device, [this](pair<gpu_uint, gpu_uint> treerange) {
             auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
@@ -1749,15 +1883,6 @@ struct cosmos
                 });
         }
 
-        surrounding_buf.fill(0, 0, 4 * num_surrounding());
-        {
-            buffer_map tree(this->tree);
-            tree[2].parent = 0;
-            tree[3].parent = 0;
-        }
-
-        make_IC();
-
         movefunc.assign(device, [this](gpu_T dt, resource<Vector<T, 3>>& v, resource<Vector<T, 3>>& x) {
             gpu_for_global(0, x.size(), [&](gpu_uint k) {
                 Vector<gpu_T, 3> old_x = x[k];
@@ -2000,7 +2125,6 @@ struct cosmos
                     {
                         Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
                         new_multipole[c] = force_tree[parent].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
-                        gpu_assert(is_initialized(new_multipole[c].template get<0>().A[0]));
                     }
 
                     Tuint count = 0;

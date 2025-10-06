@@ -124,16 +124,17 @@ int main(int argc, char** argv)
         device.force_global_size(192);
 #endif
 
+        backend_create_params params;
+
 #if WITH_METAL
         particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
         buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES()); // OpenGL buffer
         buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
 
-        backend_create_params params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT
-                                                                   | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
-                                                                   | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
-                                                                   | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
+        params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                             | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
+                                             | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
 
         // buffer<Vector<Tfloat, 3>> x(window->device, NUM_PARTICLES(), params);
         // buffer<Tfloat> color(window->device, NUM_PARTICLES(), params);
@@ -158,19 +159,10 @@ int main(int argc, char** argv)
         {
             Cosmos.make_IC(argv[1]);
         }
-
-        /*        kernel set_colors(device, [&](const resource<Vector<T, 3>>& cx) {
-                gpu_for_global(0, x.size(), [&](gpu_uint k) {
-              color[k] = Cosmos.potential2[k];//::color(static_cast<gpu_float>(Cosmos.potential2[k]));
-                    x[k] = cx[k].cast<gpu_float>();
-                    // Tweaking z coordinate to use potential for depth testing.
-                    // Particles are displayed according to their x and y coordinates.
-                    // If multiple particles are drawn at the same pixel, the one with the
-                    // highest potential will be shown.
-                    //x[k][2] = -0.9f + static_cast<gpu_float>(-Cosmos.potential2[k]) * 0.001f;
-                });
-            });
-        */
+        else
+        {
+            Cosmos.make_IC();
+        }
 
         auto last_fps_time = steady_clock::now();
         size_t last_fps_step = 0;
@@ -179,7 +171,7 @@ int main(int argc, char** argv)
         constexpr uint make_tree_every = 4;
         constexpr uint render_every = 4;
 
-        Cosmos.make_tree();
+        Cosmos.make_initial_tree();
 
         Cosmos.movefunc(0.5f * DT(), Cosmos.v, Cosmos.x);
 
