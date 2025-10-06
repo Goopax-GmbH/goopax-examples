@@ -124,34 +124,65 @@ int main(int argc, char** argv)
         device.force_global_size(192);
 #endif
 
-        backend_create_params params;
-
-#if WITH_METAL
-        particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
-        buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES()); // OpenGL buffer
-        buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
-#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-
-        params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
-                                             | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
-                                             | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
-
-        // buffer<Vector<Tfloat, 3>> x(window->device, NUM_PARTICLES(), params);
-        // buffer<Tfloat> color(window->device, NUM_PARTICLES(), params);
-        //  ranges::fill(buffer_map(color), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
-
-        VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
-#elif WITH_OPENGL
-        opengl_buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES()); // OpenGL buffer
-        opengl_buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
-#else
-        buffer<Vector3<Tfloat>> x(device, NUM_PARTICLES());
-        buffer<Vector4<Tfloat>> color(device, NUM_PARTICLES());
+#if WITH_OPENGL
+        optional<opengl_buffer<Vector3<Tfloat>>> x_gl;
+        optional<opengl_buffer<Vector4<Tfloat>>> color_gl;
+        kernel<void(const buffer<Vector<Tfloat, 3>>& cx, const buffer<Tfloat>& potential)> set_colors;
 #endif
 
+#if WITH_METAL
+        unique_ptr<particle_renderer> metalRenderer;
+#endif
+#if WITH_VULKAN
+        unique_ptr<VulkanRenderer> vulkanRenderer;
+#endif
+
+        backend_create_params params;
+
+        if (false)
+        {
+        }
+#if WITH_METAL
+        else if (auto* m = dynamic_cast<sdl_window_metal*>(&*window))
+        {
+            metalRenderer = make_unique<particle_renderer>(dynamic_cast<sdl_window_metal&>(*window));
+            x.assign(device, NUM_PARTICLES());
+            color.assign(device, NUM_PARTICLES());
+        }
+#endif
+#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+        else if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
+        {
+            params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT
+                                                 | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                                 | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
+                                                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
+
+            vulkanRenderer = make_unique<VulkanRenderer>(*v);
+        }
+#endif
+#if WITH_OPENGL
+        else if (dynamic_cast<sdl_window_gl*>(&*window))
+        {
+            x_gl = opengl_buffer<Vector3<Tfloat>>(device, NUM_PARTICLES());
+            color_gl = opengl_buffer<Vector4<Tfloat>>(device, NUM_PARTICLES());
+
+            set_colors.assign(device, [&](const resource<Vector<Tfloat, 3>>& cx, const resource<Tfloat>& potential) {
+                gpu_for_global(0, x_gl->size(), [&](gpu_uint k) {
+                    (*color_gl)[k] = ::color(potential[k]);
+                    (*x_gl)[k] = cx[k];
+                    // Tweaking z coordinate to use potential for depth testing.
+                    // Particles are displayed according to their x and y coordinates.
+                    // If multiple particles are drawn at the same pixel, the one with the
+                    // highest potential will be shown.
+                    (*x_gl)[k][2] = -potential[k] * 0.01f;
+                });
+            });
+        }
+#endif
         using T = Tfloat;
 
-        size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000;
+        size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000 + (2 << min_tree_depth);
 
         cosmos<T, MULTIPOLE_ORDER> Cosmos(device, NUM_PARTICLES(), tree_size, MAX_DISTFAC(), MAX_NODESIZE(), params);
 
@@ -168,8 +199,9 @@ int main(int argc, char** argv)
         size_t last_fps_step = 0;
 
         bool quit = false;
-        constexpr uint make_tree_every = 4;
-        constexpr uint render_every = 4;
+        constexpr uint make_tree_every = 16;
+        constexpr uint render_every = 1;
+        constexpr uint pot_every = 4;
 
         Cosmos.make_initial_tree();
 
@@ -198,7 +230,7 @@ int main(int argc, char** argv)
                 }
             }
 
-            Cosmos.update_tree();
+            Cosmos.update_tree(step % pot_every != 0);
 
             if (step % make_tree_every == 0)
             {
@@ -209,7 +241,7 @@ int main(int argc, char** argv)
             // cout << "x=" << Cosmos->x << endl;
             // cout << "v=" << Cosmos->v << endl;
             // cout << "mass=" << Cosmos->mass << endl;
-            Cosmos.compute_force(step % render_every == 0);
+            Cosmos.compute_force(step % pot_every == 0);
 
             if (PRECISION_TEST() && step / make_tree_every % 128 == 0)
             {
@@ -234,18 +266,35 @@ int main(int argc, char** argv)
             if (step % render_every == 0)
             {
                 Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
-                // set_colors(Cosmos.x);
 
+                if (false)
+                {
+                }
 #if WITH_METAL
-                Renderer.render(x);
-#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-                Renderer.render(Cosmos.x, Cosmos.potential);
-#elif WITH_OPENGL
-                render(window->window, x, &color);
-                SDL_GL_SwapWindow(window->window);
-#else
-                cout << "x=" << x << endl;
+                else if (metalRenderer.get())
+                {
+                    metalRenderer->render(x);
+                }
 #endif
+#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+                else if (vulkanRenderer.get())
+                {
+                    vulkanRenderer->render(Cosmos.x, Cosmos.potential);
+                }
+#endif
+#if WITH_OPENGL
+                else if (x_gl)
+                {
+                    set_colors(Cosmos.x, Cosmos.potential);
+                    render(window->window, *x_gl, &*color_gl);
+                    SDL_GL_SwapWindow(window->window);
+                }
+#endif
+                else
+                {
+                    cout << "x=" << const_buffer_map(Cosmos.x, 0, 10) << "..." << endl;
+                }
+
                 Cosmos.movefunc(0.5 * DT(), Cosmos.v, Cosmos.x);
             }
             else
