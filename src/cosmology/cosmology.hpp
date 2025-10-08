@@ -517,7 +517,9 @@ struct cosmos
 
     const vicinity_data vdata;
 
-    const size_t max_treesize;
+    const Tuint max_treesize;
+    // Tuint force_tree_size;
+
     const unsigned int max_nodesize;
     // Tuint num_particle_calls;
 
@@ -768,11 +770,6 @@ struct cosmos
 
         scratch_tree.fill(zero, 0, 2);
 
-        // this->scratch_tree.copy(this->tree, treesize, treeoffset, treeoffset);
-#if GOOPAX_DEBUG
-        scratch_tree.fill({}, treeoffset, tree.size());
-#endif
-
         /*
           cout << "BEFORE make_tree:" << endl;
             for (uint depth = 0; depth < treeranges.size(); ++depth)
@@ -795,6 +792,12 @@ struct cosmos
             {
                 pair<Tuint, Tuint> treerange = { treeoffset, treeoffset + treesize };
                 // cout << "depth=" << depth << ", treerange=" << treerange << endl;
+
+                if (treerange.second - treeranges.back().first > force_tree.size())
+                {
+                    cout << "force tree too small for treeranges " << treeranges.back() << " and " << treerange << endl;
+                    throw std::runtime_error("force_tree is too small to contain two adjacent tree depth ranges");
+                }
 
                 this->treeranges.push_back(treerange);
 
@@ -819,18 +822,12 @@ struct cosmos
                 // cout << "calling treecount1. treerange=" << treerange << endl;
                 this->treecount1(treerange, treeranges[depth - 1].first).wait();
 
-                // cout << "after treecount1: scratch_tree:\n";
-                // print(this->scratch_tree, treerange);
-
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g2 = steady_clock::now();
 #endif
 
                 this->treecount2(treerange, this->node_memory_request);
-
-                // cout << "after treecount2: scratch_tree:\n";
-                // print(this->scratch_tree, treerange);
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -1470,6 +1467,7 @@ struct cosmos
     cosmos(goopax_device device0,
            Tsize_t N,
            size_t max_treesize0,
+           size_t min_force_tree_size,
            Tdouble max_distfac,
            unsigned int max_nodesize0,
            backend_create_params backend_params)
@@ -1496,13 +1494,26 @@ struct cosmos
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
         //, Radix(device, [](auto a, auto b) { return a.first < b.first; })
         , matter_tree(device, this->max_treesize)
-        , force_tree(device, this->max_treesize)
         , scratch(reinterpret<buffer<Tuint>>(matter_tree))
-        , scratch_tree(reinterpret<buffer<scratch_treenode<T>>>(force_tree))
     {
         // this->scratch = reinterpret<buffer<Tuint>>(force_tree);
 
-        static_assert(sizeof(scratch_treenode<T>) <= sizeof(force_multipole), "force_tree too small for scratch_tree");
+        {
+            size_t force_tree_size = 1;
+            while (force_tree_size < min_force_tree_size
+                   || force_tree_size * sizeof(force_multipole) < tree.size() * sizeof(scratch_treenode<T>))
+            {
+                force_tree_size *= 2;
+            }
+            cout << "using force_tree_size=" << force_tree_size << endl;
+            force_tree.assign(device, force_tree_size);
+        }
+        scratch_tree = (reinterpret<buffer<scratch_treenode<T>>>(force_tree));
+        if (scratch_tree.size() < tree.size())
+        {
+            cout << "scratch_tree.size()=" << scratch_tree.size() << ". tree.size()=" << tree.size() << endl;
+            throw std::runtime_error("force_tree is too small to contain scratch_tree");
+        }
         // this->scratch_tree = reinterpret<buffer<treenode<T>>>(force_tree);
 
         matter_tree.fill(zero, 0, 4);
@@ -1999,13 +2010,13 @@ struct cosmos
                                 }
 
                                 Vector<gpu_T, 3> F =
-                                    rot(force_tree[self].calc_force(
+                                    rot(force_tree[self % force_tree.size()].calc_force(
                                             ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval()),
                                         -(Tint)mod3)
                                     * pow2(scale);
 
 #if CALC_POTENTIAL
-                                gpu_T P = force_tree[self].calc_loc_potential(
+                                gpu_T P = force_tree[self % force_tree.size()].calc_loc_potential(
                                               ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval())
                                           * scale;
 #endif
@@ -2196,7 +2207,8 @@ struct cosmos
                     for (int c = 0; c < 2; ++c)
                     {
                         Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
-                        new_multipole[c] = force_tree[parent].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
+                        new_multipole[c] =
+                            force_tree[parent % force_tree.size()].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
                     }
 
                     Tuint count = 0;
@@ -2244,11 +2256,11 @@ struct cosmos
                     for (int c = 0; c < 2; ++c)
                     {
                         gpu_uint self = this->tree[parent].children[c];
-                        force_tree[self] = new_multipole[c];
+                        force_tree[self % force_tree.size()] = new_multipole[c];
                     }
                 });
             });
-            cout << "created downwards." << endl;
+            cout << "created downwards [with_potential=" << with_potential << "]" << endl;
         }
 
         update_tree_set_nodelink.assign(device, [this]() {

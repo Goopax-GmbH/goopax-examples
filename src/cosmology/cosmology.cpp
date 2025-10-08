@@ -22,6 +22,7 @@ PARAMOPT<string> IC("ic", "");
 
 PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 1000000); // Number of particles
 PARAMOPT<double> TREE_FACTOR("tree_factor", 0.5);
+PARAMOPT<double> FORCE_TREE_FACTOR("force_tree_factor", 0.05);
 PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
 PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 800);
 PARAMOPT<Tdouble> DT("dt", 5E-3);
@@ -183,8 +184,10 @@ int main(int argc, char** argv)
         using T = Tfloat;
 
         size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000 + (2 << min_tree_depth);
+        size_t min_force_tree_size = tree_size * FORCE_TREE_FACTOR();
 
-        cosmos<T, MULTIPOLE_ORDER> Cosmos(device, NUM_PARTICLES(), tree_size, MAX_DISTFAC(), MAX_NODESIZE(), params);
+        cosmos<T, MULTIPOLE_ORDER> Cosmos(
+            device, NUM_PARTICLES(), tree_size, min_force_tree_size, MAX_DISTFAC(), MAX_NODESIZE(), params);
 
         if (argc >= 2)
         {
@@ -199,7 +202,7 @@ int main(int argc, char** argv)
         size_t last_fps_step = 0;
 
         bool quit = false;
-        constexpr uint make_tree_every = 16;
+        constexpr uint make_tree_every = 2;
         constexpr uint render_every = 1;
         constexpr uint pot_every = 4;
 
