@@ -1,4 +1,4 @@
-#define WITH_TIMINGS 1
+#define WITH_TIMINGS 0
 
 #if __has_include(<opencv2/opencv.hpp>)
 #include <opencv2/opencv.hpp>
@@ -495,8 +495,10 @@ struct cosmos
     using matter_multipole = multipole<T, T, T, T>;
     using force_multipole = multipole<T, T, T, T>;
 #elif MULTIPOLE_ORDER == 4
-    using matter_multipole = multipole<T, T, T, T, T>;
-    using force_multipole = multipole<T, T, T, T, T>;
+    using matter_multipole = multipole<Tbfloat16, T, T, T, T>;
+    using force_multipole = multipole<Tbfloat16, T, T, T, T>;
+    using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
+    using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #else
 #error
 #endif
@@ -2045,6 +2047,7 @@ struct cosmos
                     vector<local_mem<pair<Tuint, Tuint>>> todo;
                     for (Tuint c : cats)
                     {
+                        (void)c;
                         todo.emplace_back(local_size() * 2);
                     }
                     vector<gpu_uint> num_todo(cats.size(), 0);
@@ -2203,13 +2206,8 @@ struct cosmos
                 gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
                     gpu_assert(this->tree[parent].need_split);
 
-                    array<gpu_force_multipole, 2> new_multipole;
-                    for (int c = 0; c < 2; ++c)
-                    {
-                        Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
-                        new_multipole[c] =
-                            force_tree[parent % force_tree.size()].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
-                    }
+                    array<gpu_force_multipole_f32, 2> new_multipole_f32 = zero;
+                    array<gpu_force_multipole_bf16, 2> new_multipole_bf16 = zero;
 
                     Tuint count = 0;
                     for (Tuint parent_si = 0; parent_si < this->num_surrounding() + 1; ++parent_si)
@@ -2236,15 +2234,11 @@ struct cosmos
                                                                       ? parent
                                                                       : this->surrounding_link(parent, parent_si))]
                                                           .children[c2];
-                                    new_multipole[c] +=
-                                        matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)));
 
-                                    if (!with_potential)
-                                    {
-                                        // Marking the first order multipole as unused. This should speed up the
-                                        // calculations if the potential is not required.
-                                        new_multipole[c].template get<0>().A[0] = {};
-                                    }
+                                    matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
+                                                                  &new_multipole_f32[c],
+                                                                  &new_multipole_bf16[c]);
+
                                     ++count;
                                 }
                             }
@@ -2255,8 +2249,22 @@ struct cosmos
 
                     for (int c = 0; c < 2; ++c)
                     {
+                        gpu_force_multipole new_multipole = static_cast<gpu_force_multipole>(new_multipole_bf16[c]);
+                        new_multipole += static_cast<gpu_force_multipole>(new_multipole_f32[c]);
+
+                        Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
+                        new_multipole +=
+                            force_tree[parent % force_tree.size()].rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
+
+                        if (!with_potential)
+                        {
+                            // Marking the first order multipole as unused. This should speed up the
+                            // calculations if the potential is not required.
+                            new_multipole.template get<0>().A[0] = {};
+                        }
+
                         gpu_uint self = this->tree[parent].children[c];
-                        force_tree[self % force_tree.size()] = new_multipole[c];
+                        force_tree[self % force_tree.size()] = new_multipole;
                     }
                 });
             });
