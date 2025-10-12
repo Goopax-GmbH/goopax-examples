@@ -570,7 +570,6 @@ public:
   template <typename shift_t>
   void makelocal(Vector<shift_t, 3> a, auto* sum_f32, auto* sum_bf16) const
   {
-    using bf16_type = typename change_gpu_mode<Tbfloat16, T>::type;
     a = -a;
     makelocal_add_contrib<multipole>(a, *this, sum_f32, sum_bf16);
   }
@@ -619,9 +618,9 @@ public:
     for (auto& i : indices())
       {
 	F += (*this)[i] * i.factor
-	  * Vector<typename get_t<0>::value_type, 3>{ i.e[0] * pow(-r[0], i.e[0] - 1) * pow(-r[1], i.e[1]) * pow(-r[2], i.e[2]),
-			  i.e[1] * pow(-r[0], i.e[0]) * pow(-r[1], i.e[1] - 1) * pow(-r[2], i.e[2]),
-			  i.e[2] * pow(-r[0], i.e[0]) * pow(-r[1], i.e[1]) * pow(-r[2], i.e[2] - 1) };
+	  * Vector<typename get_t<0>::value_type, 3>{ static_cast<typename get_t<0>::value_type>(i.e[0] * pow(-r[0], i.e[0] - 1) * pow(-r[1], i.e[1]) * pow(-r[2], i.e[2])),
+						      static_cast<typename get_t<0>::value_type>(i.e[1] * pow(-r[0], i.e[0]) * pow(-r[1], i.e[1] - 1) * pow(-r[2], i.e[2])),
+						      static_cast<typename get_t<0>::value_type>(i.e[2] * pow(-r[0], i.e[0]) * pow(-r[1], i.e[1]) * pow(-r[2], i.e[2] - 1)) };
       }
 
     Vector<typename get_t<0>::value_type, 3> ret = F.template cast<typename get_t<0>::value_type>();
