@@ -130,6 +130,19 @@ if (NOT TARGET Eigen3::Eigen)
 endif()
 
 ExternalProject_Add(
+  build_glm
+  URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz
+  URL_HASH SHA256=9f3174561fd26904b23f0db5e560971cbf9b3cbda0b280f04d5c379d03bf234c
+  EXCLUDE_FROM_ALL 1
+  CMAKE_ARGS "${MY_CMAKE_ARGS};-DGLM_BUILD_LIBRARY=0;-DGLM_BUILD_TESTS=0"
+  "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/glm"
+  #INSTALL_COMMAND ""
+)
+if (NOT TARGET glm::glm)
+  add_dependencies(build_external_libraries build_glm)
+endif()
+
+ExternalProject_Add(
   build_glatter
   GIT_REPOSITORY https://github.com/imakris/glatter.git
   GIT_TAG 886f9765c6553ecb0934b5ec187db7d57ab0cfbc

@@ -147,8 +147,8 @@ int main(int argc, char** argv)
         else if (auto* m = dynamic_cast<sdl_window_metal*>(&*window))
         {
             metalRenderer = make_unique<particle_renderer>(dynamic_cast<sdl_window_metal&>(*window));
-            x.assign(device, NUM_PARTICLES());
-            color.assign(device, NUM_PARTICLES());
+//            x.assign(device, NUM_PARTICLES());
+  //          color.assign(device, NUM_PARTICLES());
         }
 #endif
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
@@ -276,7 +276,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
                 else if (metalRenderer.get())
                 {
-                    metalRenderer->render(x);
+                    metalRenderer->render(Cosmos.x);
                 }
 #endif
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
