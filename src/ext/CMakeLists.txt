@@ -2,6 +2,13 @@ add_custom_target(build_external_libraries)
 include(ExternalProject)
 
 set(MY_OPENCV_ARGS "-DOpenCV_STATIC=ON")
+if (WIN32)
+  set(MY_OPENCV_URL https://github.com/opencv/opencv/archive/refs/tags/4.12.0.zip)
+  set(MY_OPENCV_URL_HASH SHA256=FA3FAF7581F1FA943C9E670CF57DD6BA1C5B4178F363A188A2C8BFF1EB28B7E4)
+else ()
+  set(MY_OPENCV_URL https://github.com/opencv/opencv/archive/refs/tags/4.10.0.zip)
+  set(MY_OPENCV_URL_HASH SHA256=3810bca2b1d1c572912df0ac3888126341f3762dfd28e91068c805fb656d0e51)
+endif()
 if (ANDROID)
   set(MY_SDL_GIT_TAG release-3.2.18)
   set(MY_SDL_ARGS
@@ -73,8 +80,8 @@ endif()
 
 ExternalProject_Add(
   build_opencv
-  URL https://github.com/opencv/opencv/archive/refs/tags/4.10.0.zip
-  URL_HASH SHA256=3810bca2b1d1c572912df0ac3888126341f3762dfd28e91068c805fb656d0e51
+  URL ${MY_OPENCV_URL}
+  URL_HASH ${MY_OPENCV_URL_HASH}
   EXCLUDE_FROM_ALL 1
   CMAKE_ARGS "${MY_CMAKE_ARGS}"
   "${MY_OPENCV_ARGS}"
