@@ -33,7 +33,7 @@ endif()
 find_package(goopax REQUIRED PATHS ../..)
 find_package(TBB)
 find_package(OpenCL)
-find_package(Boost 1.65.0 COMPONENTS multiprecision)
+find_package(Boost 1.65.0 COMPONENTS multiprecision iostreams)
 find_package(SDL3 PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/sdl3")
 find_package(Eigen3 3.3 NO_MODULE PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/eigen")
 

@@ -92,10 +92,6 @@ int main(int argc, char** argv)
 
     buffer<Vector<float, 3>> x(window->device, N, params);
     buffer<Vector<float, 3>> x2(window->device, N, params);
-    buffer<float> potential(window->device, N, params);
-    {
-        potential.fill(-1);
-    }
     // ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
 
     VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
@@ -124,6 +120,12 @@ int main(int argc, char** argv)
         0,
         N);
 
+    float distance = 2;
+    float theta = 0;
+    Vector<float, 2> last_mouse;
+    int mouse_button_down = 0;
+    Vector<float, 2> xypos = { 0, 0 };
+
     bool quit = false;
     while (!quit)
     {
@@ -145,6 +147,34 @@ int main(int argc, char** argv)
                         break;
                 };
             }
+            else if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+            {
+                SDL_GetMouseState(&last_mouse[0], &last_mouse[1]);
+                mouse_button_down = e->button.button;
+                cout << "button: " << (int)e->button.button << endl;
+            }
+            else if (e->type == SDL_EVENT_MOUSE_BUTTON_UP)
+            {
+                mouse_button_down = 0;
+            }
+            else if (e->type == SDL_EVENT_MOUSE_WHEEL)
+            {
+                distance *= exp(-0.1f * e->wheel.y);
+            }
+        }
+        if (mouse_button_down)
+        {
+            Vector<float, 2> mouse;
+            SDL_GetMouseState(&mouse[0], &mouse[1]);
+            if (mouse_button_down == 1)
+            {
+                theta += (mouse[0] - last_mouse[0]) * 0.01f;
+            }
+            else if (mouse_button_down == 3)
+            {
+                xypos -= Vector<float, 2>{ mouse[0] - last_mouse[0], mouse[1] - last_mouse[1] } * 0.004f;
+            }
+            last_mouse = mouse;
         }
 
         static auto frametime = steady_clock::now();
@@ -169,7 +199,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
         Renderer.render(x);
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        Renderer.render(x, potential);
+        Renderer.render(x, distance, theta, xypos);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);

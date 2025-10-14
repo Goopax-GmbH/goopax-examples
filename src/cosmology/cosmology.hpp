@@ -483,7 +483,7 @@ Node_memory_request<U> operator+(Node_memory_request<U> a, const Node_memory_req
 }
 
 template<class T, unsigned int max_multipole>
-struct cosmos
+struct Cosmos
 {
 #if MULTIPOLE_ORDER == 1
     using matter_multipole = multipole<T, T>;
@@ -925,8 +925,12 @@ struct cosmos
 
 #if GOOPAX_DEBUG
         scratch_tree.fill({});
+#if SURROUNDING1
         surrounding_buf.fill({}, treeoffset * num_surrounding(), surrounding_buf.size());
+#endif
+#if SURROUNDING2
         surrounding2_buf.fill({}, treeoffset * 6, surrounding2_buf.size());
+#endif
 #endif
 
         scratch_tree.fill(zero, 0, 2);
@@ -1174,132 +1178,6 @@ struct cosmos
              << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
              << "    treecount4: " << duration_cast<chrono::milliseconds>(treetime[6]) << endl;
 #endif
-    }
-
-    void make_IC(const char* filename = nullptr)
-    {
-        cout << "generating initial conditions..." << flush;
-        size_t N = x.size();
-
-        std::default_random_engine generator;
-        std::normal_distribution<double> distribution;
-        std::uniform_real_distribution<double> distribution2;
-
-        if (filename)
-        {
-            v.fill({ 0, 0, 0 });
-            cout << "Reading from file " << filename << endl;
-#if !WITH_OPENCV
-            throw std::runtime_error("Need opencv to read images");
-#else
-            cv::Mat image_color = cv::imread(filename);
-            if (image_color.empty())
-            {
-                throw std::runtime_error("Failed to read image");
-            }
-
-            cv::Mat image_gray;
-            cv::cvtColor(image_color, image_gray, cv::COLOR_BGR2GRAY);
-
-            uint max_extent = max(image_gray.rows, image_gray.cols);
-            Vector<double, 3> cm = { 0, 0, 0 };
-            buffer_map cx(this->x);
-            for (auto& r : cx)
-            {
-                // cout << "." << flush;
-                while (true)
-                {
-                    for (auto& xx : r)
-                    {
-                        xx = distribution2(generator);
-                    }
-                    r[2] *= 0.1f;
-                    Vector<int, 3> ri = (r * max_extent).template cast<int>();
-                    if (ri[0] < image_gray.cols && ri[1] < image_gray.rows)
-                    {
-                        uint8_t c = image_gray.at<uint8_t>(
-                            { static_cast<int>(r[0] * max_extent), static_cast<int>(r[1] * max_extent) });
-                        if (distribution2(generator) * 255 < c)
-                        {
-                            cm += r.template cast<double>();
-                            break;
-                        }
-                    }
-                }
-            }
-            cm /= N;
-            for (auto& r : cx)
-            {
-                r -= cm.cast<Tfloat>();
-            }
-            double extent2 = 0;
-            for (auto& r : cx)
-            {
-                extent2 += r.squaredNorm();
-            }
-            extent2 /= N;
-            for (auto& r : cx)
-            {
-                r *= 0.5 / sqrt(extent2);
-                r[1] *= -1;
-            }
-#endif
-        }
-        else
-        {
-            Tint MODE = 2;
-            if (MODE == 2)
-            {
-                buffer_map x(this->x);
-                buffer_map v(this->v);
-                for (Tuint k = 0; k < N; ++k) // Setting the initial conditions:
-                { // N particles of mass 1/N each are randomly placed in a sphere of radius 1
-                    Vector<T, 3> xk;
-                    Vector<T, 3> vk;
-                    do
-                    {
-                        for (Tuint i = 0; i < 3; ++i)
-                        {
-                            xk[i] = distribution(generator) * 0.2;
-                            vk[i] = distribution(generator) * 0.2;
-                        }
-                    } while (xk.squaredNorm() >= 1);
-                    x[k] = xk;
-                    vk += Vector<T, 3>({ -xk[1], xk[0], 0 }) / (Vector<T, 3>({ -xk[1], xk[0], 0 })).norm() * 0.4f
-                          * min(xk.norm() * 10, (T)1);
-                    if (k < N / 2)
-                        vk = -vk;
-                    v[k] = vk;
-                    if (k < N / 2)
-                    {
-                        x[k] += Vector<T, 3>{ 0.8, 0.2, 0.0 };
-                        v[k] += Vector<T, 3>{ -0.4, 0.0, 0.0 };
-                    }
-                    else
-                    {
-                        x[k] -= Vector<T, 3>{ 0.8, 0.2, 0.0 };
-                        v[k] += Vector<T, 3>{ 0.4, 0.0, 0.0 };
-                    }
-                }
-            }
-            else if (MODE == 3)
-            {
-                buffer_map x(this->x);
-                for (Tsize_t p = 0; p < this->x.size(); ++p)
-                {
-                    for (Tint k = 0; k < 3; ++k)
-                    {
-                        do
-                        {
-                            x[p][k] = distribution(generator);
-                        } while (abs(x[p][k]) >= 1);
-                    }
-                }
-                v.fill({ 0, 0, 0 });
-            }
-        }
-        mass.fill(1.0 / N);
-        cout << "ok" << endl;
     }
 
     void precision_test()
@@ -1620,7 +1498,7 @@ struct cosmos
         gpu_for_global(0, in.size(), [&](gpu_uint k) { out[k] = in[new_order[k]]; });
     }
 
-    cosmos(goopax_device device0,
+    Cosmos(goopax_device device0,
            Tsize_t N,
            size_t max_treesize0,
            size_t min_force_tree_size,
