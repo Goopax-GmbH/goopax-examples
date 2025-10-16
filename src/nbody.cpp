@@ -194,12 +194,21 @@ int main(int argc, char** argv)
             SDL_SetWindowTitle(window->window, s.c_str());
             framecount = 0;
             frametime = now;
+
+	    stringstream ss;
+	    ss << "hello world" << endl
+	       << "device: " << device.name() << endl
+	       << "fps: " << rate;
+
+	    auto size = window->get_size();
+	    Renderer.updateText(ss.str(), {size[0]-500, size[1]-300}, {900, 400}, 40);
         }
+
 
 #if WITH_METAL
         Renderer.render(x);
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        Renderer.render(x, distance, theta, xypos);
+        Renderer.render(x, distance, theta, xypos, 1.f);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);

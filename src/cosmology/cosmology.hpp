@@ -1832,7 +1832,9 @@ struct Cosmos
                             gpu_uint parent = treeranges_parent_withchild_nochild[0] + (old_self - treerange.first) / 2;
                             gpu_uint childnum = old_self % 2;
                             static_cast<scratch_treenode<gpu_T>&>(tree[new_self]) = scratch_tree[old_self];
+#if GOOPAX_DEBUG
                             tree[new_self].children = {};
+#endif
                             tree[new_self].parent = parent;
 
                             // gpu_uint self = first_child + childnum;
