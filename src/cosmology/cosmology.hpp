@@ -21,6 +21,8 @@
 #define SURROUNDING2 1
 
 #define MULTIPOLE_ORDER 4
+#define HAVE_BFLOAT16 0
+
 constexpr unsigned min_tree_depth = 10;
 
 using Eigen::Vector;
@@ -497,10 +499,17 @@ struct Cosmos
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float>;
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #elif MULTIPOLE_ORDER == 4
+#if HAVE_BFLOAT16
     using matter_multipole = multipole<Tbfloat16, T, T, T, T>;
     using force_multipole = multipole<Tbfloat16, T, T, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
+#else
+    using matter_multipole = multipole<T, T, T, T, T>;
+    using force_multipole = multipole<T, T, T, T, T>;
+    using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
+    using gpu_force_multipole_bf16 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
+#endif
 #else
 #error
 #endif
