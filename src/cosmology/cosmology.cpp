@@ -34,6 +34,24 @@ PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
 PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 800);
 PARAMOPT<Tdouble> DT("dt", 5E-3);
 
+template<class T>
+Vector<T, 4> color(T pot)
+{
+    T pc = log2(clamp((-pot - 0.0f) * 0.6f, 1, 15.99f));
+
+    gpu_float slot = floor(pc);
+    gpu_float x = pc - slot;
+    gpu_assert(slot >= 0);
+    gpu_assert(slot < 4);
+    Vector<T, 4> ret =
+        cond(slot == 0,
+             Vector<gpu_float, 4>({ 0, x, 1 - x, 0 }),
+             cond(slot == 1,
+                  Vector<gpu_float, 4>({ x, 1 - x, 0, 0 }),
+                  cond(slot == 2, Vector<gpu_float, 4>({ 1, x, 0, 0 }), Vector<gpu_float, 4>({ 1, 1, x, 0 }))));
+    return ret;
+}
+
 template<typename M>
 void test()
 {
@@ -94,9 +112,10 @@ void test()
     // cout << "loc=" << loc << endl;
 }
 
-constexpr double m_ = 1.0 / (100 * 3.085678e22) / 1.5; // 100Mpc==1
-constexpr double kg_ = 1.0 / 1.98892e30 / 1E17;        // 1E10 solar mass
-constexpr double s_ = 1.0 / (365.2422 * 86400) / 1E9;  // Gyear
+constexpr double m_ = 1.0 / (15 * 3.085678e22) / 1.5;  // 100Mpc==1
+constexpr double s_ = 1.0 / (365.2422 * 86400) / 1E11; // Gyear
+// constexpr double kg_ = 1.0 / 1.98892e30 / 1E17;        // 1E10 solar mass
+constexpr double kg_ = 6.67259E-11 * m_ * m_ * m_ / s_ / s_; // G_=1
 
 // constexpr double kg_ = 1;
 // constexpr double m_ = 1;
@@ -113,21 +132,30 @@ constexpr double g_ = kg_ / 1000;
 constexpr double cm_ = m_ / 100;
 constexpr double erg_ = g_ * cm_ * cm_ / s_ / s_;
 constexpr double G_ = 6.67259E-8 * erg_ / g_ / g_ * cm_; // gravitational constant G
+static_assert(abs(G_ - 1) < 1E-10);
 
+bool is_cosmic = false;
 struct
 {
     Tdouble H0;
     Tdouble omega_m;
     Tdouble omega_lambda;
-    Tdouble box_size;
+    Tdouble box_size = 0;
     Tdouble density;
-    Tdouble a;
-    Tdouble t;
+    Tdouble a = 1;
+    Tdouble t = 0;
 
     void shift(double dt)
     {
-        t += dt;
-        a += H0 * a * sqrt(omega_m * pow<-3, 1>(a) + omega_lambda) * dt;
+        if (is_cosmic)
+        {
+            t += dt;
+            a += H0 * a * sqrt(omega_m * pow<-3, 1>(a) + omega_lambda) * dt;
+        }
+        else
+        {
+            t += dt;
+        }
     }
 
 } cosmic;
@@ -139,6 +167,7 @@ void read_music2_hdf5(const std::string& filename,
                       int part_type = 1)
 {
     // constexpr float boxlength = 100*1000;
+    is_cosmic = true;
 
     positions.clear();
     velocities.clear();
@@ -514,7 +543,12 @@ int main(int argc, char** argv)
                                                            static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
 #endif
         );
-        goopax_device device = window->device;
+
+        goopax_device device = default_device(env_CUDA);
+        if (!device.valid())
+        {
+            device = window->device;
+        }
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
@@ -531,6 +565,11 @@ int main(int argc, char** argv)
         unique_ptr<particle_renderer> metalRenderer;
 #endif
 #if WITH_VULKAN
+        buffer<Vector3<Tfloat>> x_vulkan;
+        buffer<Vector3<Tfloat>> x_cuda;
+        buffer<Tfloat> pot_vulkan;
+        buffer<Tfloat> pot_cuda;
+
         unique_ptr<VulkanRenderer> vulkanRenderer;
 #endif
 
@@ -548,14 +587,12 @@ int main(int argc, char** argv)
         }
 #endif
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        else if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
+        else if (dynamic_cast<sdl_window_vulkan*>(&*window))
         {
             params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT
                                                  | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
                                                  | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
                                                  | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
-
-            vulkanRenderer = make_unique<VulkanRenderer>(*v);
         }
 #endif
 #if WITH_OPENGL
@@ -577,6 +614,7 @@ int main(int argc, char** argv)
             });
         }
 #endif
+
         using T = Tfloat;
 
         size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000 + (2 << min_tree_depth);
@@ -603,33 +641,71 @@ int main(int argc, char** argv)
             generate_IC(cosmos);
         }
 
+#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+        if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
+        {
+            vulkanRenderer = make_unique<VulkanRenderer>(*v, cosmic.box_size / 2);
+
+            if (device.get_envmode() == env_CUDA)
+            {
+                params.vulkan.vkExternalMemoryHandleTypeFlags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+                {
+                    x_vulkan.assign(window->device, NUM_PARTICLES(), params);
+
+                    int fd;
+                    VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                                       .memory = get_vulkan_device_memory(x_vulkan),
+                                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+                    call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
+
+                    x_cuda = buffer<Vector<Tfloat, 3>>::create_from_external_handle(device, fd, NUM_PARTICLES());
+                }
+                {
+                    pot_vulkan.assign(window->device, NUM_PARTICLES(), params);
+
+                    int fd;
+                    VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                                       .memory = get_vulkan_device_memory(pot_vulkan),
+                                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+                    call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
+
+                    pot_cuda = buffer<Tfloat>::create_from_external_handle(device, fd, NUM_PARTICLES());
+                }
+            }
+        }
+#endif
+
         array<kernel<void(
                   const buffer<Vector<Tfloat, 3>>& x, buffer<Vector<Tfloat, 3>>& force, buffer<Tfloat>& potential)>,
               2>
             add_cube_force;
         for (bool with_pot : { false, true })
         {
-            add_cube_force[with_pot].assign(device,
-                                            [with_pot](const resource<Vector<Tfloat, 3>>& x,
-                                                       resource<Vector<Tfloat, 3>>& force,
-                                                       resource<Tfloat>& potential) {
-                                                gpu_for_global(0, x.size(), [&](gpu_uint k) {
-                                                    auto [P, F] = get_potential_and_force<gpu_float>(
-                                                        x[k], cosmic.box_size, -cosmic.density);
+            add_cube_force[with_pot].assign(
+                device,
+                [with_pot](const resource<Vector<Tfloat, 3>>& x,
+                           resource<Vector<Tfloat, 3>>& force,
+                           resource<Tfloat>& potential) {
+                    gpu_for_global(0, x.size(), [&](gpu_uint k) {
+                        auto [P, F] = get_potential_and_force<gpu_float>(x[k], cosmic.box_size, -cosmic.density);
 
-                                                    gpu_assert(isfinite(P));
-                                                    gpu_assert(isfinite(F.sum()));
+                        gpu_assert(isfinite(P));
+                        gpu_assert(isfinite(F.sum()));
 
-                                                    force[k] += F;
-                                                    if (with_pot)
-                                                    {
-                                                        potential[k] += P;
+                        force[k] += F;
+                        if (with_pot)
+                        {
+                            potential[k] += P;
 
-                                                        potential[k] -= 0.1;
-                                                        potential[k] *= 20;
-                                                    }
-                                                });
-                                            });
+                            potential[k] -= static_cast<float>(1E20 * G_ * kg_ / m_);
+                            potential[k] = log10(clamp(-potential[k] * 60.f, 1.01f, 100.f)) * (1.f / 2);
+
+                            gpu_assert(potential[k] > 0);
+                            gpu_assert(potential[k] <= 1);
+                        }
+                    });
+                });
         }
 
         auto last_fps_time = steady_clock::now();
@@ -717,13 +793,13 @@ int main(int argc, char** argv)
             // cout << "v=" << Cosmos->v << endl;
             // cout << "mass=" << Cosmos->mass << endl;
             cosmos.compute_force(step % pot_every == 0);
-            add_cube_force[step % pot_every == 0](cosmos.x, cosmos.force, cosmos.potential);
 
             if (PRECISION_TEST() && step / make_tree_every % 128 == 0)
             {
                 cosmos.precision_test();
                 // exit(0);
             }
+            add_cube_force[step % pot_every == 0](cosmos.x, cosmos.force, cosmos.potential);
 
             cosmos.kick(DT() * pow<-1, 1>(cosmic.a) * G_, cosmos.force, cosmos.v);
 
@@ -738,6 +814,23 @@ int main(int argc, char** argv)
                 window->set_title(title.str());
                 last_fps_step = step;
                 last_fps_time = now;
+
+                stringstream ss;
+                ss << "nbody (fmm)" << endl
+                   << "device: " << device.name() << endl
+                   << "simulation step: " << step << endl
+                   << "fps: " << rate << endl
+                   << "time: " << cosmic.t / (1E9 * yr_) << " Gyr" << endl
+                   << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
+                   << endl;
+
+#if WITH_VULKAN
+                if (vulkanRenderer.get())
+                {
+                    auto size = window->get_size();
+                    vulkanRenderer->updateText(ss.str(), { size[0] - 1000, size[1] - 400 }, { 600, 500 }, 40);
+                }
+#endif
             }
 
             if (step % render_every == 0)
@@ -757,7 +850,46 @@ int main(int argc, char** argv)
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
                 else if (vulkanRenderer.get())
                 {
-                    vulkanRenderer->render(cosmos.x, cosmos.potential, distance, theta, xypos);
+                    if (device.get_envmode() == env_CUDA)
+                    {
+                        cout << "copying x and pot" << endl;
+                        // auto x = cosmos.x.to_vector();
+                        // auto pot = cosmos.potential.to_vector();
+                        // x_vulkan = std::move(x);
+                        window->device.wait_all();
+                        device.wait_all();
+
+                        /*
+                          {
+                          auto pc = pot_cuda.to_vector();
+                          auto pv = pot_vulkan.to_vector();
+
+                          for (uint k=0; k<pc.size(); k+=11111)
+                            {
+                              cout << "k=" << k << ": cuda=" << pc[k] << ", vulkan: " << pv[k] << endl;
+                            }
+                        }
+                        */
+
+                        window->device.wait_all();
+                        device.wait_all();
+
+                        x_cuda.copy(cosmos.x);
+                        pot_cuda.copy(cosmos.potential).wait();
+
+                        window->device.wait_all();
+                        device.wait_all();
+
+                        // pot_vulkan.fill(-10).wait();
+                        vulkanRenderer->render(x_vulkan, pot_vulkan, distance, theta, xypos);
+
+                        window->device.wait_all();
+                        device.wait_all();
+                    }
+                    else
+                    {
+                        vulkanRenderer->render(cosmos.x, cosmos.potential, distance, theta, xypos);
+                    }
                 }
 #endif
 #if WITH_OPENGL

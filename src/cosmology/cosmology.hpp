@@ -116,24 +116,6 @@ const float top_halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
 
 template<class T>
-Vector<T, 4> color(T pot)
-{
-    T pc = log2(clamp((-pot - 0.0f) * 0.6f, 1, 15.99f));
-
-    gpu_float slot = floor(pc);
-    gpu_float x = pc - slot;
-    gpu_assert(slot >= 0);
-    gpu_assert(slot < 4);
-    Vector<T, 4> ret =
-        cond(slot == 0,
-             Vector<gpu_float, 4>({ 0, x, 1 - x, 0 }),
-             cond(slot == 1,
-                  Vector<gpu_float, 4>({ x, 1 - x, 0, 0 }),
-                  cond(slot == 2, Vector<gpu_float, 4>({ 1, x, 0, 0 }), Vector<gpu_float, 4>({ 1, 1, x, 0 }))));
-    return ret;
-}
-
-template<class T>
 Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)
 {
     if (step < 0)
@@ -2177,11 +2159,25 @@ struct Cosmos
                                 allow_preload();
                                 gpu_T halflen = pow<1, 3>(2.f) / scale;
                                 Vector<gpu_T, 3> halflen3 = vdata.make_real({ 1, 1, 1 }, halflen);
+
+#ifndef NDEBUG
+                                gpu_bool ok = true;
                                 for (uint k = 0; k < 3; ++k)
                                 {
-                                    gpu_assert(abs((rot(x[pa], mod3) - this->tree[self].rcenter)[k])
-                                               < halflen3[k] * 1.001f);
+                                    ok = ok
+                                         && (abs((rot(x[pa], mod3) - this->tree[self].rcenter)[k])
+                                             < halflen3[k] * 1.001f);
                                 }
+                                gpu_if(!ok)
+                                {
+                                    gpu_ostream DUMP(cout);
+                                    DUMP << "BAD: x[" << pa << "]=" << x[pa] << ", rotated=" << rot(x[pa], mod3)
+                                         << "\nv=" << v[pa] << "\nnode[" << self << "]=" << tree[self]
+                                         << "\ndiff=" << (rot(x[pa], mod3) - this->tree[self].rcenter)
+                                         << "\nhalflen3=" << halflen3 << endl;
+                                }
+                                gpu_assert(ok);
+#endif
 
                                 Vector<gpu_T, 3> F =
                                     rot(force_tree[self % force_tree.size()].calc_force(

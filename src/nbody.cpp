@@ -195,15 +195,12 @@ int main(int argc, char** argv)
             framecount = 0;
             frametime = now;
 
-	    stringstream ss;
-	    ss << "hello world" << endl
-	       << "device: " << device.name() << endl
-	       << "fps: " << rate;
+            stringstream ss;
+            ss << "hello world" << endl << "device: " << device.name() << endl << "fps: " << rate;
 
-	    auto size = window->get_size();
-	    Renderer.updateText(ss.str(), {size[0]-500, size[1]-300}, {900, 400}, 40);
+            auto size = window->get_size();
+            Renderer.updateText(ss.str(), { size[0] - 500, size[1] - 300 }, { 900, 400 }, 40);
         }
-
 
 #if WITH_METAL
         Renderer.render(x);
