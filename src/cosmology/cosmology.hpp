@@ -466,8 +466,34 @@ Node_memory_request<U> operator+(Node_memory_request<U> a, const Node_memory_req
     return a += b;
 }
 
+template<typename T>
+struct CosmosData
+{
+    buffer<Vector<T, 3>> x;
+    buffer<Vector<T, 3>> v;
+#if CALC_POTENTIAL
+    buffer<T> potential;
+#endif
+    buffer<T> mass;
+    buffer<Vector<T, 3>> force;
+    buffer<T> tmps; // FIXME: Reduce memory.
+
+    void swapBuffers(bool preserve_potential)
+    {
+        // mimicking the buffer swap in update_tree
+
+        swap(x, force);
+        swap(v, force);
+        swap(mass, tmps);
+        if (preserve_potential)
+        {
+            swap(potential, tmps);
+        }
+    }
+};
+
 template<class T, unsigned int max_multipole>
-struct Cosmos
+struct Cosmos : public CosmosData<T>
 {
 #if MULTIPOLE_ORDER == 1
     using matter_multipole = multipole<T, T>;
@@ -501,15 +527,6 @@ struct Cosmos
     goopax_device device;
     const Tuint num_particles;
     using gpu_T = typename make_gpu<T>::type;
-    buffer<Vector<T, 3>> x;
-    buffer<Vector<T, 3>> v;
-#if CALC_POTENTIAL
-    buffer<T> potential;
-#endif
-    buffer<T> mass;
-    buffer<Vector<T, 3>> force;
-    buffer<T> tmps; // FIXME: Reduce memory.
-
     const vicinity_data vdata;
 
     const Tuint max_treesize;
@@ -865,10 +882,10 @@ struct Cosmos
                 gpu_for_global(
                     partnode_leaf_ranges.back().first, partnode_leaf_ranges.back().second, [&](gpu_uint self) {
                         tree[self].pbegin = static_cast<gpu_uint>(
-                            gpu_size_t(self - partnode_leaf_ranges.back().first) * x.size()
+                            gpu_size_t(self - partnode_leaf_ranges.back().first) * this->x.size()
                             / (partnode_leaf_ranges.back().second - partnode_leaf_ranges.back().first));
                         tree[self].pend = static_cast<gpu_uint>(
-                            gpu_size_t(self - partnode_leaf_ranges.back().first + 1) * x.size()
+                            gpu_size_t(self - partnode_leaf_ranges.back().first + 1) * this->x.size()
                             / (partnode_leaf_ranges.back().second - partnode_leaf_ranges.back().first));
                     });
             });
@@ -1082,9 +1099,9 @@ struct Cosmos
                 treecount4[depth % 3]({ treerange.first, partnode_withchild_ranges.back().second },
                                       treerange.second,
                                       depth + 1,
-                                      x,
-                                      v,
-                                      mass);
+                                      this->x,
+                                      this->v,
+                                      this->mass);
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g7 = steady_clock::now();
@@ -1210,13 +1227,13 @@ struct Cosmos
         }
 
         // cout << "Doing precision test" << endl;
-        const Tuint np = min(x.size(), (Tuint)100);
+        const Tuint np = min(this->x.size(), (Tuint)100);
 
         goopax_future<double> poterr;
-        Tdouble tot = verify(x,
-                             force,
-                             mass,
-                             potential,
+        Tdouble tot = verify(this->x,
+                             this->force,
+                             this->mass,
+                             this->potential,
 #if CALC_POTENTIAL
                              poterr,
 #endif
@@ -1286,7 +1303,7 @@ struct Cosmos
 
             for (Tuint depth = this->treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
-                upwards[modulo((int)depth, 3)](this->treeranges_withchild_nochild[depth], scale, x, mass);
+                upwards[modulo((int)depth, 3)](this->treeranges_withchild_nochild[depth], scale, this->x, this->mass);
 
                 scale *= pow<-1, 3>(2.0);
             }
@@ -1307,7 +1324,7 @@ struct Cosmos
       cout << endl;
         */
 
-        this->handle_particles_direct2[with_potential](x, mass, force, potential);
+        this->handle_particles_direct2[with_potential](this->x, this->mass, this->force, this->potential);
 
 #if WITH_TIMINGS
         device.wait_all();
@@ -1339,7 +1356,7 @@ struct Cosmos
 #endif
 
                 handle_particles_from_multipole[with_potential][modulo((int)depth, 3)](
-                    this->partnode_ranges[depth], scale, x, force, potential);
+                    this->partnode_ranges[depth], scale, this->x, this->force, this->potential);
                 // cout << "partnode_index_range[" << depth << "]=" << partnode_index_ranges[depth] << endl;
 
 #if WITH_TIMINGS
@@ -1373,7 +1390,7 @@ struct Cosmos
         */
 
         scratch.fill(~0u, scratch_offset_next_p, scratch_offset_next_p + this->treeranges.back().second);
-        scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + x.size());
+        scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + this->x.size());
         scratch.fill(0, scratch_offset_new_num_p, scratch_offset_new_num_p + 2);
 
 #if WITH_TIMINGS
@@ -1389,7 +1406,7 @@ struct Cosmos
         device.wait_all();
         auto t1 = steady_clock::now();
 #endif
-        update_tree_1(x);
+        update_tree_1(this->x);
 
 #if WITH_TIMINGS
         device.wait_all();
@@ -1440,16 +1457,16 @@ struct Cosmos
         auto t5 = steady_clock::now();
 #endif
 
-        this->apply_vec2(x, force);
-        swap(x, force);
-        this->apply_vec2(v, force);
-        swap(v, force);
-        this->apply_scalar2(mass, tmps);
-        swap(mass, tmps);
+        this->apply_vec2(this->x, this->force);
+        swap(this->x, this->force);
+        this->apply_vec2(this->v, this->force);
+        swap(this->v, this->force);
+        this->apply_scalar2(this->mass, this->tmps);
+        swap(this->mass, this->tmps);
         if (preserve_potential)
         {
-            this->apply_scalar2(potential, tmps);
-            swap(potential, tmps);
+            this->apply_scalar2(this->potential, this->tmps);
+            swap(this->potential, this->tmps);
         }
 
 #if WITH_TIMINGS
@@ -1489,25 +1506,15 @@ struct Cosmos
         gpu_for_global(0, in.size(), [&](gpu_uint k) { out[k] = in[new_order[k]]; });
     }
 
-    Cosmos(goopax_device device0,
-           Tsize_t N,
+    Cosmos(CosmosData<T>&& data,
            size_t max_treesize0,
            size_t min_force_tree_size,
            Tdouble max_distfac,
-           unsigned int max_nodesize0,
-           backend_create_params backend_params)
-        : device(device0)
-        , num_particles(N)
-        , x(device, N, backend_params)
-        , v(device, N, backend_params)
-        ,
-#if CALC_POTENTIAL
-        potential(device, N, backend_params)
-        ,
-#endif
-        mass(device, N, backend_params)
-        , force(device, N, backend_params)
-        , tmps(device, N, backend_params)
+           unsigned int max_nodesize0)
+
+        : CosmosData<T>(std::move(data))
+        , device(this->x.get_device())
+        , num_particles(this->x.size())
         , vdata(max_distfac)
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
@@ -2172,7 +2179,7 @@ struct Cosmos
                                 {
                                     gpu_ostream DUMP(cout);
                                     DUMP << "BAD: x[" << pa << "]=" << x[pa] << ", rotated=" << rot(x[pa], mod3)
-                                         << "\nv=" << v[pa] << "\nnode[" << self << "]=" << tree[self]
+                                         << "\nv=" << this->v[pa] << "\nnode[" << self << "]=" << tree[self]
                                          << "\ndiff=" << (rot(x[pa], mod3) - this->tree[self].rcenter)
                                          << "\nhalflen3=" << halflen3 << endl;
                                 }

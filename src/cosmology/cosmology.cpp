@@ -565,15 +565,11 @@ int main(int argc, char** argv)
         unique_ptr<particle_renderer> metalRenderer;
 #endif
 #if WITH_VULKAN
-        buffer<Vector3<Tfloat>> x_vulkan;
-        buffer<Vector3<Tfloat>> x_cuda;
-        buffer<Tfloat> pot_vulkan;
-        buffer<Tfloat> pot_cuda;
-
+        CosmosData<Tfloat> vulkanData;
         unique_ptr<VulkanRenderer> vulkanRenderer;
 #endif
 
-        backend_create_params params;
+        CosmosData<Tfloat> initData;
 
         if (false)
         {
@@ -587,12 +583,47 @@ int main(int argc, char** argv)
         }
 #endif
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        else if (dynamic_cast<sdl_window_vulkan*>(&*window))
+        else if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
         {
-            params = { .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT
-                                                 | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
-                                                 | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
-                                                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR } };
+            backend_create_params params = {
+                .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                          | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
+                                          | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
+            };
+            if (device.get_envmode() == env_CUDA)
+            {
+                params.vulkan.vkExternalMemoryHandleTypeFlags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+            }
+            vulkanData.x.assign(window->device, NUM_PARTICLES(), params);
+            vulkanData.v.assign(window->device, NUM_PARTICLES(), params);
+            vulkanData.force.assign(window->device, NUM_PARTICLES(), params);
+            vulkanData.potential.assign(window->device, NUM_PARTICLES(), params);
+            vulkanData.mass.assign(window->device, NUM_PARTICLES(), params);
+            vulkanData.tmps.assign(window->device, NUM_PARTICLES(), params);
+
+            if (device.get_envmode() == env_CUDA)
+            {
+                auto link = [&](auto& vulkan, auto& cuda) {
+                    int fd;
+                    VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                                                       .memory = get_vulkan_device_memory(vulkan),
+                                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+                    call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
+
+                    cuda = vulkan.create_from_external_handle(device, fd, NUM_PARTICLES());
+                };
+
+                link(vulkanData.x, initData.x);
+                link(vulkanData.v, initData.v);
+                link(vulkanData.force, initData.force);
+                link(vulkanData.potential, initData.potential);
+                link(vulkanData.mass, initData.mass);
+                link(vulkanData.tmps, initData.tmps);
+            }
+            else
+            {
+                swap(vulkanData, initData);
+            }
         }
 #endif
 #if WITH_OPENGL
@@ -620,8 +651,12 @@ int main(int argc, char** argv)
         size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000 + (2 << min_tree_depth);
         size_t min_force_tree_size = tree_size * FORCE_TREE_FACTOR();
 
-        Cosmos<T, MULTIPOLE_ORDER> cosmos(
-            device, NUM_PARTICLES(), tree_size, min_force_tree_size, MAX_DISTFAC(), MAX_NODESIZE(), params);
+        Cosmos<T, MULTIPOLE_ORDER> cosmos(std::move(initData),
+
+                                          tree_size,
+                                          min_force_tree_size,
+                                          MAX_DISTFAC(),
+                                          MAX_NODESIZE());
 
         if (argc >= 2)
         {
@@ -645,34 +680,6 @@ int main(int argc, char** argv)
         if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
         {
             vulkanRenderer = make_unique<VulkanRenderer>(*v, cosmic.box_size / 2);
-
-            if (device.get_envmode() == env_CUDA)
-            {
-                params.vulkan.vkExternalMemoryHandleTypeFlags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-
-                {
-                    x_vulkan.assign(window->device, NUM_PARTICLES(), params);
-
-                    int fd;
-                    VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
-                                                       .memory = get_vulkan_device_memory(x_vulkan),
-                                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
-                    call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
-
-                    x_cuda = buffer<Vector<Tfloat, 3>>::create_from_external_handle(device, fd, NUM_PARTICLES());
-                }
-                {
-                    pot_vulkan.assign(window->device, NUM_PARTICLES(), params);
-
-                    int fd;
-                    VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
-                                                       .memory = get_vulkan_device_memory(pot_vulkan),
-                                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
-                    call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
-
-                    pot_cuda = buffer<Tfloat>::create_from_external_handle(device, fd, NUM_PARTICLES());
-                }
-            }
         }
 #endif
 
@@ -723,6 +730,7 @@ int main(int argc, char** argv)
         constexpr uint pot_every = 4;
 
         cosmos.make_initial_tree();
+        vulkanData.swapBuffers(false);
 
         // cosmos.movefunc(0.5f * DT(), cosmos.v, cosmos.x);
 
@@ -782,6 +790,7 @@ int main(int argc, char** argv)
             cosmic.shift(0.25 * DT());
 
             cosmos.update_tree(step % pot_every != 0);
+            vulkanData.swapBuffers(step % pot_every != 0);
 
             if (step % make_tree_every == 0)
             {
@@ -874,14 +883,12 @@ int main(int argc, char** argv)
                         window->device.wait_all();
                         device.wait_all();
 
-                        x_cuda.copy(cosmos.x);
-                        pot_cuda.copy(cosmos.potential).wait();
 
                         window->device.wait_all();
                         device.wait_all();
 
                         // pot_vulkan.fill(-10).wait();
-                        vulkanRenderer->render(x_vulkan, pot_vulkan, distance, theta, xypos);
+                        vulkanRenderer->render(vulkanData.x, vulkanData.potential, distance, theta, xypos);
 
                         window->device.wait_all();
                         device.wait_all();
