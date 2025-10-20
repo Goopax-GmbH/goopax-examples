@@ -883,7 +883,6 @@ int main(int argc, char** argv)
                         window->device.wait_all();
                         device.wait_all();
 
-
                         window->device.wait_all();
                         device.wait_all();
 
