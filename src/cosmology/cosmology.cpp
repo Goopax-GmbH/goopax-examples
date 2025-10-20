@@ -4,9 +4,21 @@
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <filesystem>
 #include <hdf5.h>
+#if WITH_CUDART
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+#endif
 
 namespace fs = std::filesystem;
 using Vector3f = Eigen::Vector3f;
+
+static void call_cuda(cudaError_t err)
+{
+    if (err != cudaSuccess)
+    {
+        throw std::runtime_error("cuda error code " + to_string(err));
+    }
+}
 
 /**
    \example cosmology.cpp
@@ -537,18 +549,35 @@ int main(int argc, char** argv)
     {
         unique_ptr<sdl_window> window = sdl_window::create("fmm nbody",
                                                            { 1024, 768 },
-                                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
-#if GOOPAX_VERSION_ID < 50802
-                                                           ,
-                                                           static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
+                                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
+                                                           static_cast<goopax::envmode>(env_ALL),
+                                                           { "VK_KHR_external_semaphore_capabilities" },
+                                                           { "VK_KHR_external_semaphore",
+#ifdef _WIN32
+                                                             "VK_KHR_external_semaphore_win32"
+#else
+                                                             "VK_KHR_external_semaphore_fd"
 #endif
-        );
+                                                           });
 
-        goopax_device device = default_device(env_CUDA);
+        goopax_device device;
+        for (auto& d : devices(env_CUDA))
+        {
+            if (d.uuid() == window->device.uuid())
+            {
+                device = d;
+            }
+        }
+
         if (!device.valid())
         {
             device = window->device;
         }
+
+        cout << "compute device: " << device.name() << ", env=" << device.get_envmode() << ", uuid=" << hex
+             << reinterpret<array<unsigned int, 4>>(device.uuid()) << dec << endl;
+        cout << "display device: " << window->device.name() << ", env=" << window->device.get_envmode()
+             << ", uuid=" << reinterpret<array<unsigned int, 4>>(window->device.uuid()) << dec << endl;
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
@@ -566,10 +595,14 @@ int main(int argc, char** argv)
 #endif
 #if WITH_VULKAN
         CosmosData<Tfloat> vulkanData;
-        unique_ptr<VulkanRenderer> vulkanRenderer;
+        unique_ptr<goopax_draw::vulkan::Renderer> vulkanRenderer;
 #endif
 
         CosmosData<Tfloat> initData;
+        optional<goopax_draw::vulkan::Semaphore> computeFinishSemaphore;
+#if WITH_CUDART
+        cudaExternalSemaphore_t computeFinishSemaphore_cuda = nullptr;
+#endif
 
         if (false)
         {
@@ -619,6 +652,26 @@ int main(int argc, char** argv)
                 link(vulkanData.potential, initData.potential);
                 link(vulkanData.mass, initData.mass);
                 link(vulkanData.tmps, initData.tmps);
+
+#if WITH_CUDART
+                cudaExternalSemaphoreHandleDesc desc = {};
+#ifdef _WIN32
+                computeFinishSemaphore.emplace(*v, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT);
+                ...
+#else
+                computeFinishSemaphore.emplace(*v, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
+                desc.type = cudaExternalSemaphoreHandleTypeOpaqueFd;
+                {
+                    VkSemaphoreGetFdInfoKHR info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+                                                     .pNext = nullptr,
+                                                     .semaphore = computeFinishSemaphore->vkSemaphore,
+                                                     .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT };
+
+                    call_vulkan(v->vkGetSemaphoreFdKHR(v->vkDevice, &info, &desc.handle.fd));
+                }
+#endif
+                    call_cuda(cudaImportExternalSemaphore(&computeFinishSemaphore_cuda, &desc));
+#endif
             }
             else
             {
@@ -679,7 +732,7 @@ int main(int argc, char** argv)
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
         if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
         {
-            vulkanRenderer = make_unique<VulkanRenderer>(*v, cosmic.box_size / 2);
+            vulkanRenderer = make_unique<goopax_draw::vulkan::Renderer>(*v, cosmic.box_size / 2);
         }
 #endif
 
@@ -861,32 +914,16 @@ int main(int argc, char** argv)
                 {
                     if (device.get_envmode() == env_CUDA)
                     {
-                        cout << "copying x and pot" << endl;
-                        // auto x = cosmos.x.to_vector();
-                        // auto pot = cosmos.potential.to_vector();
-                        // x_vulkan = std::move(x);
-                        window->device.wait_all();
-                        device.wait_all();
+                        cudaExternalSemaphoreSignalParams params = {};
 
-                        /*
-                          {
-                          auto pc = pot_cuda.to_vector();
-                          auto pv = pot_vulkan.to_vector();
+                        call_cuda(cudaSignalExternalSemaphoresAsync(&computeFinishSemaphore_cuda,
+                                                                    &params,
+                                                                    1,
+                                                                    reinterpret<CUstream>(device.get_device_queue())));
 
-                          for (uint k=0; k<pc.size(); k+=11111)
-                            {
-                              cout << "k=" << k << ": cuda=" << pc[k] << ", vulkan: " << pv[k] << endl;
-                            }
-                        }
-                        */
+                        // window->device.wait_all();
+                        // device.wait_all();
 
-                        window->device.wait_all();
-                        device.wait_all();
-
-                        window->device.wait_all();
-                        device.wait_all();
-
-                        // pot_vulkan.fill(-10).wait();
                         vulkanRenderer->render(vulkanData.x, vulkanData.potential, distance, theta, xypos);
 
                         window->device.wait_all();

@@ -1,4 +1,5 @@
 find_package(HDF5)
+find_package(CUDAToolkit)
 
 
 add_sdl_main(cosmology glatter goopax_draw Boost::iostreams hdf5::hdf5)
@@ -11,6 +12,12 @@ if (TARGET cosmology)
   endif()
   if (APPLE)
     SET_SOURCE_FILES_PROPERTIES(cosmology.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  if (TARGET CUDA::cudart)
+    target_link_libraries(cosmology CUDA::cudart)
+    target_compile_definitions(cosmology PUBLIC -DWITH_CUDART=1)
+  else()
+    target_compile_definitions(cosmology PUBLIC -DWITH_CUDART=0)
   endif()
 endif()
 
