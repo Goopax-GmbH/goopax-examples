@@ -144,6 +144,7 @@ struct
     Tdouble density;
     Tdouble a = 1;
     Tdouble t = 0;
+    Tdouble today;
 
     void shift(double dt)
     {
@@ -220,6 +221,15 @@ void read_music2_hdf5(const std::string& filename,
 
     // H5Gclose(header_id);
     // H5Fclose(file_id);
+
+    {
+        auto c = cosmic;
+        while (c.a < 1)
+        {
+            c.shift(1E-5);
+        }
+        cosmic.today = c.t;
+    }
 
     std::cout << "H0: " << cosmic.H0 << " = " << cosmic.H0 / (km_ / s_ / Mpc_) << " km/s/Mpc" << std::endl;
     std::cout << "Omega_m: " << cosmic.omega_m << std::endl;
@@ -566,7 +576,7 @@ int main(int argc, char** argv)
 #endif
 #if WITH_VULKAN
         CosmosData<Tfloat> vulkanData;
-        unique_ptr<VulkanRenderer> vulkanRenderer;
+        unique_ptr<goopax_draw::vulkan::Renderer> vulkanRenderer;
 #endif
 
         CosmosData<Tfloat> initData;
@@ -645,6 +655,15 @@ int main(int argc, char** argv)
             });
         }
 #endif
+        else
+        {
+            initData.x.assign(device, NUM_PARTICLES);
+            initData.v.assign(device, NUM_PARTICLES);
+            initData.force.assign(device, NUM_PARTICLES);
+            initData.potential.assign(device, NUM_PARTICLES);
+            initData.mass.assign(device, NUM_PARTICLES);
+            initData.tmps.assign(device, NUM_PARTICLES);
+        }
 
         using T = Tfloat;
 
@@ -679,7 +698,8 @@ int main(int argc, char** argv)
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
         if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
         {
-            vulkanRenderer = make_unique<VulkanRenderer>(*v, cosmic.box_size / 2);
+            vulkanRenderer = make_unique<goopax_draw::vulkan::Renderer>(
+                *v, cosmic.box_size / 2, std::array<unsigned int, 2>{ 1000, 500 });
         }
 #endif
 
@@ -687,32 +707,48 @@ int main(int argc, char** argv)
                   const buffer<Vector<Tfloat, 3>>& x, buffer<Vector<Tfloat, 3>>& force, buffer<Tfloat>& potential)>,
               2>
             add_cube_force;
-        for (bool with_pot : { false, true })
+
+        kernel<void(buffer<Tfloat> & potential)> adjust_palette;
+
+        if (is_cosmic)
         {
-            add_cube_force[with_pot].assign(
-                device,
-                [with_pot](const resource<Vector<Tfloat, 3>>& x,
-                           resource<Vector<Tfloat, 3>>& force,
-                           resource<Tfloat>& potential) {
-                    gpu_for_global(0, x.size(), [&](gpu_uint k) {
-                        auto [P, F] = get_potential_and_force<gpu_float>(x[k], cosmic.box_size, -cosmic.density);
+            for (bool with_pot : { false, true })
+            {
+                add_cube_force[with_pot].assign(
+                    device,
+                    [with_pot](const resource<Vector<Tfloat, 3>>& x,
+                               resource<Vector<Tfloat, 3>>& force,
+                               resource<Tfloat>& potential) {
+                        gpu_for_global(0, x.size(), [&](gpu_uint k) {
+                            auto [P, F] = get_potential_and_force<gpu_float>(x[k], cosmic.box_size, -cosmic.density);
 
-                        gpu_assert(isfinite(P));
-                        gpu_assert(isfinite(F.sum()));
+                            gpu_assert(isfinite(P));
+                            gpu_assert(isfinite(F.sum()));
 
-                        force[k] += F;
-                        if (with_pot)
-                        {
-                            potential[k] += P;
+                            force[k] += F;
+                            if (with_pot)
+                            {
+                                potential[k] += P;
 
-                            potential[k] -= static_cast<float>(1E20 * G_ * kg_ / m_);
-                            potential[k] = log10(clamp(-potential[k] * 60.f, 1.01f, 100.f)) * (1.f / 2);
+                                potential[k] -= static_cast<float>(1E20 * G_ * kg_ / m_);
+                                potential[k] = log10(clamp(-potential[k] * 60.f, 1.01f, 99.9f)) * (1.f / 2);
 
-                            gpu_assert(potential[k] > 0);
-                            gpu_assert(potential[k] <= 1);
-                        }
+                                gpu_assert(potential[k] > 0);
+                                gpu_assert(potential[k] <= 1);
+                            }
+                        });
                     });
+            }
+        }
+        else
+        {
+            adjust_palette.assign(device, [](resource<Tfloat>& potential) {
+                for_each_global(potential, [](auto& p) {
+                    p = log10(clamp(-p * 2.f, 1.01f, 99.9f)) * (1.f / 2);
+                    gpu_assert(p > 0);
+                    gpu_assert(p <= 1);
                 });
+            });
         }
 
         auto last_fps_time = steady_clock::now();
@@ -730,7 +766,9 @@ int main(int argc, char** argv)
         constexpr uint pot_every = 4;
 
         cosmos.make_initial_tree();
+#if WITH_VULKAN
         vulkanData.swapBuffers(false);
+#endif
 
         // cosmos.movefunc(0.5f * DT(), cosmos.v, cosmos.x);
 
@@ -785,12 +823,25 @@ int main(int argc, char** argv)
                 last_mouse = mouse;
             }
 
+            if (step != 0)
+            {
+#if WITH_VULKAN
+                if (vulkanRenderer.get() != nullptr)
+                {
+                    auto& window = vulkanRenderer->window;
+                    window.vkWaitForFences(window.vkDevice, 1, &vulkanRenderer->inFlightFence, VK_TRUE, window.timeout);
+                }
+#endif
+            }
+
             cosmic.shift(0.25 * DT());
             cosmos.movefunc(0.5 * DT() / pow2(cosmic.a), cosmos.v, cosmos.x);
             cosmic.shift(0.25 * DT());
 
             cosmos.update_tree(step % pot_every != 0);
+#if WITH_VULKAN
             vulkanData.swapBuffers(step % pot_every != 0);
+#endif
 
             if (step % make_tree_every == 0)
             {
@@ -808,36 +859,64 @@ int main(int argc, char** argv)
                 cosmos.precision_test();
                 // exit(0);
             }
-            add_cube_force[step % pot_every == 0](cosmos.x, cosmos.force, cosmos.potential);
+            if (is_cosmic)
+            {
+                add_cube_force[step % pot_every == 0](cosmos.x, cosmos.force, cosmos.potential);
+            }
+            else if (step % pot_every == 0)
+            {
+                adjust_palette(cosmos.potential);
+            }
+            goopax_future<void> compute_future = device.enqueue_fence();
 
             cosmos.kick(DT() * pow<-1, 1>(cosmic.a) * G_, cosmos.force, cosmos.v);
 
+            compute_future.wait();
             auto now = steady_clock::now();
-            if (now - last_fps_time > chrono::seconds(1))
+            if (now - last_fps_time > chrono::seconds(1) || true)
             {
-                stringstream title;
-                Tdouble rate = (step - last_fps_step) / chrono::duration<double>(now - last_fps_time).count();
-                title << "N-body. N=" << cosmos.x.size() << ", step " << step << ", " << rate << ". a=" << cosmic.a
-                      << ", t=" << cosmic.t / (1E9 * yr_) << " Gyr"
-                      << " fps, device=" << device.name();
-                window->set_title(title.str());
+                float rate = (step - last_fps_step) / chrono::duration<float>(now - last_fps_time).count();
+                /*
+                      stringstream title;
+                      title << "N-body. N=" << cosmos.x.size() << ", step " << step << ", " << rate << ". a=" <<
+                   cosmic.a
+                            << ", t=" << cosmic.t / (1E9 * yr_) << " Gyr"
+                            << " fps, device=" << device.name();
+                      window->set_title(title.str());
+                */
                 last_fps_step = step;
                 last_fps_time = now;
 
                 stringstream ss;
-                ss << "nbody (fmm)" << endl
-                   << "device: " << device.name() << endl
-                   << "simulation step: " << step << endl
-                   << "fps: " << rate << endl
-                   << "time: " << cosmic.t / (1E9 * yr_) << " Gyr" << endl
-                   << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
-                   << endl;
+
+                if (is_cosmic)
+                {
+                    ss << "N-Body Simulation" << endl
+                       << "Fast Multipole (" << MULTIPOLE_ORDER << "th order)" << endl
+                       << "device: " << device.name() << endl
+                       << "simulation step: " << step << endl
+                       << "fps: " << rate << endl
+                       << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
+                       << " (" << static_cast<size_t>(abs(cosmic.t - cosmic.today + 2025 * yr_) / yr_)
+                       << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
+                       << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
+                       << endl;
+                }
+                else
+                {
+                    ss << "N-Body Simulation" << endl
+                       << "Fast Multipole (" << MULTIPOLE_ORDER << "th order)" << endl
+                       << "device: " << device.name() << endl
+                       << "simulation step: " << step << endl
+                       << "fps: " << rate << endl
+                       << endl;
+                }
 
 #if WITH_VULKAN
                 if (vulkanRenderer.get())
                 {
                     auto size = window->get_size();
-                    vulkanRenderer->updateText(ss.str(), { size[0] - 1000, size[1] - 400 }, { 600, 500 }, 40);
+                    vulkanRenderer->updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
                 }
 #endif
             }
@@ -861,36 +940,7 @@ int main(int argc, char** argv)
                 {
                     if (device.get_envmode() == env_CUDA)
                     {
-                        cout << "copying x and pot" << endl;
-                        // auto x = cosmos.x.to_vector();
-                        // auto pot = cosmos.potential.to_vector();
-                        // x_vulkan = std::move(x);
-                        window->device.wait_all();
-                        device.wait_all();
-
-                        /*
-                          {
-                          auto pc = pot_cuda.to_vector();
-                          auto pv = pot_vulkan.to_vector();
-
-                          for (uint k=0; k<pc.size(); k+=11111)
-                            {
-                              cout << "k=" << k << ": cuda=" << pc[k] << ", vulkan: " << pv[k] << endl;
-                            }
-                        }
-                        */
-
-                        window->device.wait_all();
-                        device.wait_all();
-
-                        window->device.wait_all();
-                        device.wait_all();
-
-                        // pot_vulkan.fill(-10).wait();
                         vulkanRenderer->render(vulkanData.x, vulkanData.potential, distance, theta, xypos);
-
-                        window->device.wait_all();
-                        device.wait_all();
                     }
                     else
                     {
