@@ -9,9 +9,9 @@
 #if WITH_TIMINGS
 #include <chrono>
 #endif
+#include "../common/output.hpp"
 #include <fstream>
 #include <goopax_draw/window_sdl.h>
-#include <goopax_extra/output.hpp>
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/struct_types.hpp>
 #include <random>
@@ -48,42 +48,6 @@ inline uint modulo(int i, int n)
 inline gpu_uint modulo(gpu_int i, gpu_int n)
 {
     return (i % n + n) % n;
-}
-
-template<typename S>
-concept ostream_type = std::same_as<S, std::ostream> || std::same_as<S, goopax::gpu_ostream>;
-
-template<ostream_type S, typename A, typename B>
-S& operator<<(S& s, const pair<A, B>& p);
-
-template<ostream_type S, typename V>
-#if __cpp_lib_ranges >= 201911
-    requires std::ranges::input_range<V>
-#else
-    requires std::is_convertible<typename std::iterator_traits<typename V::iterator>::iterator_category,
-                                 std::input_iterator_tag>::value
-#endif
-             && std::is_class<V>::value && (!is_same<V, string>::value)
-             && (is_same<S, ostream>::value || is_same<S, goopax::gpu_ostream>::value)
-S& operator<<(S& s, const V& v)
-{
-    s << "(";
-    for (auto t = v.begin(); t != v.end(); ++t)
-    {
-        if (t != v.begin())
-        {
-            s << ", ";
-        }
-        s << *t;
-    }
-    s << ")";
-    return s;
-}
-
-template<ostream_type S, typename A, typename B>
-S& operator<<(S& s, const pair<A, B>& p)
-{
-    return s << "[" << p.first << "," << p.second << "]";
 }
 
 using signature_t = Tuint64_t;
@@ -1536,6 +1500,7 @@ struct Cosmos : public CosmosData<T>
         // this->scratch = reinterpret<buffer<Tuint>>(force_tree);
 
         std::stack<future<void>> futures;
+        // constexpr std::launch policy = std::launch::deferred;
         constexpr std::launch policy = std::launch::async;
 
         {
@@ -1717,10 +1682,6 @@ struct Cosmos : public CosmosData<T>
                         for (auto cousin : get_surrounding(self, parent, 0, true, true))
                         {
                             has_children2 = has_children2 || (scratch_tree[get<0>(cousin)].need_split);
-                            // DUMP << "treecount2. self=" << self << ", cousin=" << get<0>(cousin) << "," <<
-                            // get<1>(cousin)
-                            // << "," << get<2>(cousin) << "="
-                            //<< scratch_tree[get<0>(cousin)] << ", has_children2=" << has_children2 << "\n";
                         }
                         // If has_children is true, this node must further be split. Either because force
                         // calculation wants to continue in this node, or because it is used by another node
@@ -2745,5 +2706,11 @@ struct Cosmos : public CosmosData<T>
         }));
 
         cout << "Waiting for kernel creations" << endl;
+
+        while (!futures.empty())
+        {
+            futures.top().get();
+            futures.pop();
+        }
     }
 };
