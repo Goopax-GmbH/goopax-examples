@@ -386,7 +386,7 @@ public:
 	    if constexpr(MP::order == 1)
 	      {
 		(*this)[i] +=
-		  - static_cast<T>(0.5) * i.template cycle<1>([&](auto q, auto w){return M[q] * static_cast<T>((a.squaredNorm() * (w.i[0]==w.i[1])));});
+		  - static_cast<T>(0.5) * i.template cycle<1>([&](auto q, auto w){return static_cast<T>(M[q]) * static_cast<T>((a.squaredNorm() * (w.i[0]==w.i[1])));});
 	      }
 	  }
 	if constexpr (order == 4)

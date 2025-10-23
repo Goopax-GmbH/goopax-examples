@@ -770,7 +770,7 @@ int main(int argc, char** argv)
         vulkanData.swapBuffers(false);
 #endif
 
-        // cosmos.movefunc(0.5f * DT(), cosmos.v, cosmos.x);
+        float rate = 0;
 
         for (size_t step = 0; !quit; ++step)
         {
@@ -859,6 +859,11 @@ int main(int argc, char** argv)
                 cosmos.precision_test();
                 // exit(0);
             }
+#if WITH_TIMINGS
+            device.wait_all();
+            auto t0 = steady_clock::now();
+#endif
+
             if (is_cosmic)
             {
                 add_cube_force[step % pot_every == 0](cosmos.x, cosmos.force, cosmos.potential);
@@ -867,37 +872,42 @@ int main(int argc, char** argv)
             {
                 adjust_palette(cosmos.potential);
             }
+#if WITH_TIMINGS
+            device.wait_all();
+            auto t1 = steady_clock::now();
+#endif
             goopax_future<void> compute_future = device.enqueue_fence();
 
             cosmos.kick(DT() * pow<-1, 1>(cosmic.a) * G_, cosmos.force, cosmos.v);
+#if WITH_TIMINGS
+            device.wait_all();
+            auto t2 = steady_clock::now();
+#endif
 
             compute_future.wait();
             auto now = steady_clock::now();
-            if (now - last_fps_time > chrono::seconds(1) || true)
+            // if (now - last_fps_time > chrono::seconds(1) || true)
             {
-                float rate = (step - last_fps_step) / chrono::duration<float>(now - last_fps_time).count();
-                /*
-                      stringstream title;
-                      title << "N-body. N=" << cosmos.x.size() << ", step " << step << ", " << rate << ". a=" <<
-                   cosmic.a
-                            << ", t=" << cosmic.t / (1E9 * yr_) << " Gyr"
-                            << " fps, device=" << device.name();
-                      window->set_title(title.str());
-                */
-                last_fps_step = step;
-                last_fps_time = now;
+                if (step % max(pot_every, make_tree_every) == 0)
+                {
+                    rate = (step - last_fps_step) / chrono::duration<float>(now - last_fps_time).count();
+                    last_fps_step = step;
+                    last_fps_time = now;
+                }
 
                 stringstream ss;
 
                 if (is_cosmic)
                 {
-                    ss << "N-Body Simulation" << endl
-                       << "Fast Multipole (" << MULTIPOLE_ORDER << "th order)" << endl
+                    double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+
+                    ss << "N-Body Simulation (Fast Multipole)" << endl
                        << "device: " << device.name() << endl
-                       << "simulation step: " << step << endl
-                       << "fps: " << rate << endl
+                       << "number of particles: " << cosmos.x.size() << endl
+                       << "step: " << step << endl
+                       << "steps per second: " << rate << endl
                        << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
-                       << " (" << static_cast<size_t>(abs(cosmic.t - cosmic.today + 2025 * yr_) / yr_)
+                       << " (" << static_cast<ssize_t>(abs(caltime + (caltime >= 0 ? 1.0 : 0.0)) / yr_)
                        << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
                        << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
                        << endl;
@@ -907,6 +917,7 @@ int main(int argc, char** argv)
                     ss << "N-Body Simulation" << endl
                        << "Fast Multipole (" << MULTIPOLE_ORDER << "th order)" << endl
                        << "device: " << device.name() << endl
+                       << "number of particles: " << cosmos.x.size() << endl
                        << "simulation step: " << step << endl
                        << "fps: " << rate << endl
                        << endl;
@@ -923,8 +934,6 @@ int main(int argc, char** argv)
 
             if (step % render_every == 0)
             {
-                cout << "potential=" << cosmos.potential.to_vector(0, 10) << endl;
-
                 if (false)
                 {
                 }
@@ -961,9 +970,27 @@ int main(int argc, char** argv)
                     cout << "x=" << const_buffer_map(cosmos.x, 0, 10) << "..." << endl;
                 }
             }
+#if WITH_TIMINGS
+            device.wait_all();
+            auto t3 = steady_clock::now();
+#endif
             cosmic.shift(0.25 * DT());
             cosmos.movefunc(0.5 * DT() / cosmic.a, cosmos.v, cosmos.x);
             cosmic.shift(0.25 * DT());
+#if WITH_TIMINGS
+            device.wait_all();
+            auto t4 = steady_clock::now();
+#endif
+
+#if WITH_TIMINGS
+            // cout << "treecount: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
+            cout << "main loop:\n"
+                 << "  add_cube_force: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
+                 << "  kick: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
+                 << "  render: " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms" << endl
+                 << "  move: " << duration_cast<std::chrono::milliseconds>(t4 - t3).count() << " ms" << endl
+                 << endl;
+#endif
         }
         return 0;
     }

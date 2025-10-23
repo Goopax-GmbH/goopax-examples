@@ -1,4 +1,4 @@
-#define WITH_TIMINGS 1
+#define WITH_TIMINGS 0
 
 #if WITH_OPENCV
 #include <opencv2/opencv.hpp>
@@ -21,7 +21,7 @@
 #define SURROUNDING2 1
 
 #define MULTIPOLE_ORDER 4
-#define HAVE_BFLOAT16 0
+#define HAVE_BFLOAT16 1
 
 constexpr unsigned min_tree_depth = 10;
 
@@ -41,41 +41,13 @@ constexpr T intceil(const T a, T mod)
     return a + (mod - ((mod + a - 1) % mod) - 1);
 }
 
-inline uint modulo(int i, int n)
-{
-    return (i % n + n) % n;
-}
-inline gpu_uint modulo(gpu_int i, gpu_int n)
-{
-    return (i % n + n) % n;
-}
-
 using signature_t = Tuint64_t;
 using gpu_signature_t = typename make_gpu<signature_t>::type;
 
-Tuint log2_exact(Tsize_t a)
-{
-    for (unsigned int r = 0; r < 61; ++r)
-    {
-        if (a == (1ul << r))
-        {
-            return r;
-        }
-    }
-    cout << "log2_exact: bad a=" << a << endl;
-    abort();
-}
-
 #define CALC_POTENTIAL 1
-#define USE_CARTESIAN_MULTIPOLES 1
 
-#if USE_CARTESIAN_MULTIPOLES
 #include "multipole_cart.hpp"
-#else
-#include "multipole_sh.hpp"
-#endif
 
-// #include "radix_sort.hpp"
 const float top_halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
 
@@ -160,13 +132,6 @@ struct treenode : public scratch_treenode<T>
     }
 };
 
-gpu_type<Tuint*> get_children_p(gpu_type<treenode<>*> p)
-{
-    return reinterpret<gpu_type<Tuint*>>(p)
-           + (&reinterpret<treenode<>*>(nullptr)->children[0]
-              - reinterpret_cast<Tuint*>(reinterpret<treenode<>*>(nullptr)));
-}
-
 void myassert(bool b)
 {
     assert(b);
@@ -247,7 +212,6 @@ auto calc_sig(const Vector<T, 3>& x, Tuint max_depthbits)
     using sig_t = typename change_gpu_mode<signature_t, T>::type;
     assert(max_depthbits >= 3);
     assert(max_depthbits <= get_size<sig_t>::value * 8);
-    // Vector<Tuint, 3> depth = { (max_depthbits + 2) / 3, (max_depthbits + 1) / 3, (max_depthbits) / 3 };
 
     sig_t ret = calc_sig_fast<T>(x, signature_t()) >> (get_size<sig_t>::value * 8 - max_depthbits);
 
@@ -288,14 +252,12 @@ struct vicinity_data
     {
         p[0] = p[0] * 2 + c;
         return rot(p);
-        // return { p[1], p[2], p[0] * 2 + c };
     }
     static Vector<Tint, 3> child2parent(Vector<Tint, 3> p, Tint c)
     {
         p = rot(p, -1);
         p[0] = floor((p[0] + c) / 2.0);
         return p;
-        // return { p[2], floor((p[0] + c) / 2.0), p[1] };
     }
     template<typename U>
     static Vector<U, 3> make_real(Vector<Tint, 3> v, U halflen)
@@ -325,7 +287,6 @@ struct vicinity_data
                     {
                         m = max((int)abs(m) - 1, 0);
                     }
-                    // Vector<Tdouble, 3> center = make_real(ac, Tdouble(1.0));
                     Vector<Tdouble, 3> mincc = make_real(ac2, Tdouble(1.0)) / 2;
 
                     Tbool uc = (mincc.squaredNorm() < pow2(max_distfac * pow<-1, 3>(2.0)));
@@ -440,7 +401,7 @@ struct CosmosData
 #endif
     buffer<T> mass;
     buffer<Vector<T, 3>> force;
-    buffer<T> tmps; // FIXME: Reduce memory.
+    buffer<T> tmps;
 
     void swapBuffers(bool preserve_potential)
     {
@@ -472,8 +433,8 @@ struct Cosmos : public CosmosData<T>
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #elif MULTIPOLE_ORDER == 4
 #if HAVE_BFLOAT16
-    using matter_multipole = multipole<Tbfloat16, T, T, T, T>;
-    using force_multipole = multipole<Tbfloat16, T, T, T, T>;
+    using matter_multipole = multipole<Tbfloat16, Tbfloat16, T, T, T>;
+    using force_multipole = multipole<Tbfloat16, Tbfloat16, T, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #else
@@ -494,20 +455,16 @@ struct Cosmos : public CosmosData<T>
     const vicinity_data vdata;
 
     const Tuint max_treesize;
-    // Tuint force_tree_size;
 
     const unsigned int max_nodesize;
-    // Tuint num_particle_calls;
 
     buffer<treenode<T>> tree;
 
-    // buffer<Tuint> split_indices;
-    // buffer<Tuint> partnode_indices;
 #if SURROUNDING1
     buffer<Tuint> surrounding_buf;
 #endif
 #if SURROUNDING2
-    buffer<Tuint> surrounding2_buf;
+    buffer<array<Tuint, 6>> surrounding2_buf;
 #endif
 
     vector<pair<Tuint, Tuint>> treeranges;
@@ -526,7 +483,6 @@ struct Cosmos : public CosmosData<T>
     vector<pair<Tuint, Tuint>> all_leaf_ranges_packed;
     buffer<pair<Tuint, Tuint>> all_leaf_ranges_packed_buf;
 
-    // buffer<Tuint> undone_uncles;
     unsigned int num_surrounding() const
     {
         return vdata.vicinity_vec.size();
@@ -581,7 +537,7 @@ struct Cosmos : public CosmosData<T>
         for (int depth = max_depth; depth >= 0; --depth)
         {
             auto get_neighbor = [&](gpu_uint node, int dim, bool dir) {
-                return surrounding2_buf[node * 6 + (2 * dim + (dir ^ (reverse[(1 + dim + depth) % 3])))];
+                return gpu_array_access(surrounding2_buf[node], 2 * dim + (dir ^ (reverse[(1 + dim + depth) % 3])));
             };
 
             auto get_all_points = [depth](Vector<Tint, 3> p) {
@@ -684,8 +640,6 @@ struct Cosmos : public CosmosData<T>
 #if SURROUNDING2
         const_buffer_map surrounding2(this->surrounding2_buf);
 #endif
-        // const_buffer_map matter(multipole_tree);
-        // const_buffer_map surrounding(this->surrounding_buf);
         for (uint k = treerange.first; k < treerange.second; ++k)
         {
             cout << k << ": " << map[k];
@@ -700,10 +654,7 @@ struct Cosmos : public CosmosData<T>
 #endif
 #if SURROUNDING2
                 cout << ". surrounding2:";
-                for (uint s = 0; s < 6; ++s)
-                {
-                    cout << " " << surrounding2[k * 6 + s];
-                }
+                cout << " " << surrounding2[k];
 #endif
             }
             cout << endl;
@@ -728,7 +679,6 @@ struct Cosmos : public CosmosData<T>
     array<kernel<void(pair<Tuint, Tuint> treerange_with_child,
                       Tuint treebegin_next,
                       Tuint8_t depth_sublevel,
-                      // buffer<treenode<T>>& dest_tree,
                       buffer<Vector<T, 3>>& x,
                       buffer<Vector<T, 3>>& v,
                       buffer<T>& mass)>,
@@ -763,8 +713,6 @@ struct Cosmos : public CosmosData<T>
                   Tuint pnum)>
         verify;
 
-    // radix_sort<pair<signature_t, Tuint>, signature_t> Radix;
-
     void make_tree_base()
     {
         cout << "make_tree_base" << endl;
@@ -772,7 +720,7 @@ struct Cosmos : public CosmosData<T>
         surrounding_buf.fill(0, 0, 4 * num_surrounding());
 #endif
 #if SURROUNDING2
-        surrounding2_buf.fill(0, 0, 4 * 6);
+        surrounding2_buf.fill(zero, 0, 4);
 #endif
         {
             buffer_map tree(this->tree, 0, 2 + (1 << (min_tree_depth + 1)));
@@ -804,8 +752,6 @@ struct Cosmos : public CosmosData<T>
 
                     Tuint parent = tree[self].parent;
                     Tuint c = self % 2;
-                    // cout << "self=" << self << ", parent=" << parent << ", c=" << c << endl;
-                    // cout << "now: node[" << self << "]=" << tree[self] << endl;
 
                     Vector<T, 3> rcenter = tree[parent].rcenter;
                     if (self != 3)
@@ -901,7 +847,7 @@ struct Cosmos : public CosmosData<T>
         surrounding_buf.fill({}, treeoffset * num_surrounding(), surrounding_buf.size());
 #endif
 #if SURROUNDING2
-        surrounding2_buf.fill({}, treeoffset * 6, surrounding2_buf.size());
+        surrounding2_buf.fill({}, treeoffset, surrounding2_buf.size());
 #endif
 #endif
 
@@ -966,7 +912,7 @@ struct Cosmos : public CosmosData<T>
 
 #if WITH_TIMINGS
                 device.wait_all();
-                auto g5 = steady_clock::now();
+                auto g4 = steady_clock::now();
 #endif
                 Node_memory_request<Tuint> memory_offset;
                 {
@@ -1018,13 +964,6 @@ struct Cosmos : public CosmosData<T>
                     memory_offset.partnode_withchild = memory_offset.withchild + sum.withchild;
                     memory_offset.partnode_leaf = memory_offset.partnode_withchild + sum.partnode_withchild;
                     memory_offset.leaf = memory_offset.partnode_leaf + sum.partnode_leaf;
-
-                    /*
-                      cout << "treeoffset=" << treeoffset << ", treerange=" << treerange
-                      << ", sum=" << sum
-                      << ", memory_offset=" << memory_offset
-                      << endl;
-                    */
                 }
 
                 assert(treeoffset == treerange.second);
@@ -1041,6 +980,11 @@ struct Cosmos : public CosmosData<T>
 
                 // cout << "after treecount3: tree:\n";
                 // print(this->tree, treerange);
+
+#if WITH_TIMINGS
+                device.wait_all();
+                auto g5 = steady_clock::now();
+#endif
 
                 make_surrounding(
                     { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] },
@@ -1076,12 +1020,6 @@ struct Cosmos : public CosmosData<T>
                 {
                     boxsize[k] = top_halflen * (pow(2.0, -Tint(depth + 2 - k) / 3 + (2.0 - k) / 3.0) + 1E-7);
                 }
-                // cout1 << "boxsize=" << boxsize << endl;
-
-                // cout << "after treecount4\n";
-                // print(this->tree, treerange);
-
-                // parent_begin = treerange.first;
 
                 if (treesize == 0)
                     break;
@@ -1092,8 +1030,8 @@ struct Cosmos : public CosmosData<T>
                 treetime[0] += (g1 - g0);
                 treetime[1] += (g2 - g1);
                 // treetime[2] += (g3 - g2);
-                // treetime[3] += (g4 - g3);
-                treetime[4] += (g5 - g2);
+                treetime[3] += (g4 - g2);
+                treetime[4] += (g5 - g4);
                 treetime[5] += (g6 - g5);
                 treetime[6] += (g7 - g6);
 #endif
@@ -1141,13 +1079,11 @@ struct Cosmos : public CosmosData<T>
         cout << "\nmake_tree:\n"
              << "  sort particles: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
              << "  tree: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-             << "    make_surrounding: " << duration_cast<chrono::milliseconds>(treetime[0]) << endl
-             << "    treecount1: " << duration_cast<chrono::milliseconds>(treetime[1])
-             << endl
-             // cout << "  fill: " << duration_cast<chrono::milliseconds>(treetime[2]) << endl;
-             // cout << "  surrounding buf: " << duration_cast<chrono::milliseconds>(treetime[3]) << endl;
-             << "    treecount2: " << duration_cast<chrono::milliseconds>(treetime[4]) << endl
-             << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
+             << "    make_surrounding[1]: " << duration_cast<chrono::milliseconds>(treetime[0]) << endl
+             << "    treecount1: " << duration_cast<chrono::milliseconds>(treetime[1]) << endl
+             << "    treecount2: " << duration_cast<chrono::milliseconds>(treetime[3]) << endl
+             << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[4]) << endl
+             << "    make_surrounding[2]: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
              << "    treecount4: " << duration_cast<chrono::milliseconds>(treetime[6]) << endl;
 #endif
     }
@@ -1230,13 +1166,11 @@ struct Cosmos : public CosmosData<T>
           2>
         handle_particles_from_multipole;
 
-    // buffer<pair<Tuint, Tuint>> scratch2;
     static constexpr unsigned int scratch_offset = 4 * sizeof(matter_multipole) / sizeof(Tuint);
 
     const Tuint scratch_offset_tree = scratch_offset;
 
     const Tuint scratch_offset_next_p = scratch_offset;
-    // const Tuint scratch_offset_num_removed = scratch_offset_next_p + this->tree.size();
     const Tuint scratch_offset_particle_list = scratch_offset_next_p + this->tree.size();
     const Tuint scratch_offset_nodelink = scratch_offset_particle_list + num_particles;
 
@@ -1267,7 +1201,7 @@ struct Cosmos : public CosmosData<T>
 
             for (Tuint depth = this->treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
-                upwards[modulo((int)depth, 3)](this->treeranges_withchild_nochild[depth], scale, this->x, this->mass);
+                upwards[depth % 3](this->treeranges_withchild_nochild[depth], scale, this->x, this->mass);
 
                 scale *= pow<-1, 3>(2.0);
             }
@@ -1277,16 +1211,6 @@ struct Cosmos : public CosmosData<T>
         device.wait_all();
         auto t2 = steady_clock::now();
 #endif
-
-        /*
-          cout << "calling handle_particles_direct." << endl;
-      cout << "partnode_ranges:\n";
-      for (auto& p : const_buffer_map(partnode_ranges_buf))
-        {
-          cout << p << endl;
-        }
-      cout << endl;
-        */
 
         this->handle_particles_direct2[with_potential](this->x, this->mass, this->force, this->potential);
 
@@ -1319,7 +1243,7 @@ struct Cosmos : public CosmosData<T>
                 auto d1 = steady_clock::now();
 #endif
 
-                handle_particles_from_multipole[with_potential][modulo((int)depth, 3)](
+                handle_particles_from_multipole[with_potential][depth % 3](
                     this->partnode_ranges[depth], scale, this->x, this->force, this->potential);
                 // cout << "partnode_index_range[" << depth << "]=" << partnode_index_ranges[depth] << endl;
 
@@ -1347,12 +1271,6 @@ struct Cosmos : public CosmosData<T>
 
     void update_tree(bool preserve_potential)
     {
-        /*
-      #if GOOPAX_DEBUG
-          scratch.fill({}, scratch_offset, scratch.size());
-  #endif
-        */
-
         scratch.fill(~0u, scratch_offset_next_p, scratch_offset_next_p + this->treeranges.back().second);
         scratch.fill(0xfffffffe, scratch_offset_particle_list, scratch_offset_particle_list + this->x.size());
         scratch.fill(0, scratch_offset_new_num_p, scratch_offset_new_num_p + 2);
@@ -1364,8 +1282,6 @@ struct Cosmos : public CosmosData<T>
 
         update_tree_set_nodelink();
 
-        // cout << "calling update_tree_1" << endl;
-        // cout << "all_leaf_ranges_packed=" << all_leaf_ranges_packed_buf << endl;
 #if WITH_TIMINGS
         device.wait_all();
         auto t1 = steady_clock::now();
@@ -1379,9 +1295,6 @@ struct Cosmos : public CosmosData<T>
 
         for (Tint depth = this->treeranges.size() - 1; depth != -1; --depth)
         {
-            // cout << "calling upwards. depth=" << depth << ", partnode_range: " << this->partnode_ranges[depth]
-            //<< ", si range: " << this->split_ranges[depth]
-            //<< endl;
             update_tree_upwards({ this->partnode_leaf_ranges[depth].first, treeranges[depth].second },
                                 { this->treeranges[depth].first, this->partnode_withchild_ranges[depth].second });
         }
@@ -1393,26 +1306,13 @@ struct Cosmos : public CosmosData<T>
 
         for (Tuint depth = 1; depth < this->treeranges.size(); ++depth)
         {
-            // cout << "calling update_tree_downwards(" << this->treeranges[depth] << "), depth=" << depth << endl;
             update_tree_downwards(
                 { treeranges_withchild_nochild[depth - 1][0], treeranges_withchild_nochild[depth - 1][1] });
-
-            // cout << "after downwards: tree:\n";
-            // print(this->tree, treeranges[depth]);
         }
 #if WITH_TIMINGS
         device.wait_all();
         auto t4 = steady_clock::now();
 #endif
-
-        // cout << "plist:" << endl;
-        // for (auto& p : const_buffer_map(plist1))
-        //{
-        // cout << p << endl;
-        // }
-        // cout << endl;
-
-        // cout << "calling update_tree_reorder_particles. leaf_ra
 
         update_tree_reorder_particles();
 
@@ -1438,21 +1338,11 @@ struct Cosmos : public CosmosData<T>
         auto t6 = steady_clock::now();
 #endif
 
-        /*
-        cout << "AFTER update_tree:" << endl;
-        for (uint depth=0; depth<treeranges.size(); ++depth)
-          {
-            cout << "depth=" << depth << ":\n";
-            print(this->tree, treeranges[depth], true);
-          }
-        */
-
 #if GOOPAX_DEBUG
         scratch.fill({}, scratch_offset, scratch.size());
 #endif
 
 #if WITH_TIMINGS
-        // cout << "treecount: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
         cout << "\nupdate_tree:\n"
              << "  set_sig: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
              << "  update_tree_1: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
@@ -1483,22 +1373,17 @@ struct Cosmos : public CosmosData<T>
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
         , tree(device, max_treesize)
-    //, split_indices(device, max_treesize)
-    //, partnode_indices(device, max_treesize)
 #if SURROUNDING1
         , surrounding_buf(device, max_treesize * num_surrounding())
 #endif
 #if SURROUNDING2
-        , surrounding2_buf(device, max_treesize * 6)
+        , surrounding2_buf(device, max_treesize)
 #endif
         , partnode_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
-        //, Radix(device, [](auto a, auto b) { return a.first < b.first; })
         , matter_tree(device, this->max_treesize)
         , scratch(reinterpret<buffer<Tuint>>(matter_tree))
     {
-        // this->scratch = reinterpret<buffer<Tuint>>(force_tree);
-
         std::stack<future<void>> futures;
         // constexpr std::launch policy = std::launch::deferred;
         constexpr std::launch policy = std::launch::async;
@@ -1519,7 +1404,6 @@ struct Cosmos : public CosmosData<T>
             cout << "scratch_tree.size()=" << scratch_tree.size() << ". tree.size()=" << tree.size() << endl;
             throw std::runtime_error("force_tree is too small to contain scratch_tree");
         }
-        // this->scratch_tree = reinterpret<buffer<treenode<T>>>(force_tree);
 
         matter_tree.fill(zero, 0, 4);
         force_tree.fill(zero, 0, 4);
@@ -1659,10 +1543,7 @@ struct Cosmos : public CosmosData<T>
                     group_end = min(group_end, treerange.second);
 
                     gpu_for_local(group_begin, group_end, [&](gpu_uint self) {
-                        // gpu_uint self = group_self + local_id();
                         gpu_uint parent = parent_begin + (self - treerange.first) / 2;
-
-                        // gpu_ostream DUMP(cout);
 
                         gpu_bool has_children;
 #if SURROUNDING1
@@ -1705,7 +1586,6 @@ struct Cosmos : public CosmosData<T>
                                 !scratch_tree[self].need_split && !has_children && scratch_tree[self].is_partnode,
                             .leaf = !scratch_tree[self].need_split && !has_children && !scratch_tree[self].is_partnode
                         };
-                        // DUMP << "my=" << my << "\n" << endl;
 
                         auto old = nmr;
                         nmr += my.cast<gpu_uint>();
@@ -1756,9 +1636,6 @@ struct Cosmos : public CosmosData<T>
                         need_sync ? (group_begin + intceil(group_end - group_begin, (gpu_uint)local_size()))
                                   : group_end,
                         [&](gpu_uint old_self) {
-                            // gpu_uint old_self = group_self + local_id();
-                            // gpu_bool have_child = (tree_tmp[old_self].first_child != 0);
-
                             Node_memory_request<gpu_bool> my = zero;
 
                             gpu_if(old_self < group_end || !need_sync)
@@ -1788,17 +1665,6 @@ struct Cosmos : public CosmosData<T>
 
                             gpu_if(old_self < group_end || !need_sync)
                             {
-                                /*
-                              DUMP << "\ngroup_id=" << group_id() << ", local_id=" << local_id() << ": treecount3."
-                                 << "\nmy=" << my
-                                 << "\nnext: " << oldnext << " -> " << next
-                                 << "\nold_self=" << old_self << ", new_self=" << new_self
-                                 << "\ntree[" << new_self << "]=" << tree[new_self]
-                                 << "\nsetting tree[" << new_self << "].parent=" << parent_begin << " + (" << old_self
-                              <<
-                              "-" <<  treerange.first << ")/2 = " << tree[new_self].parent << endl;
-                                */
-
                                 gpu_uint parent =
                                     treeranges_parent_withchild_nochild[0] + (old_self - treerange.first) / 2;
                                 gpu_uint childnum = old_self % 2;
@@ -1808,7 +1674,6 @@ struct Cosmos : public CosmosData<T>
 #endif
                                 tree[new_self].parent = parent;
 
-                                // gpu_uint self = first_child + childnum;
                                 Vector<gpu_T, 3> rcenter = tree[parent].rcenter;
                                 rcenter[0] += cond(childnum == 0, -halflen, halflen);
                                 tree[new_self].rcenter = rot(rcenter);
@@ -1817,7 +1682,7 @@ struct Cosmos : public CosmosData<T>
                                 gpu_assert(parent >= 2u);
                                 gpu_if(parent >= 2u)
                                 {
-                                    get_children_p(tree.begin() + parent)[childnum] = new_self;
+                                    gpu_array_access(tree[parent].children, childnum) = new_self;
                                     gpu_assert(old_node_p[new_self] == 0);
                                     old_node_p[new_self] =
                                         reinterpret<gpu_type<Tuint*>>(old_children + old_node_p[parent])[childnum];
@@ -1870,11 +1735,9 @@ struct Cosmos : public CosmosData<T>
                 [this, mod3](pair<gpu_uint, gpu_uint> treerange,
                              gpu_uint treebegin_next,
                              gpu_uint8 depth_sublevel,
-                             // resource<treenode<T>>& dest_tree,
                              resource<Vector<T, 3>>& x,
                              resource<Vector<T, 3>>& v,
                              resource<T>& mass) {
-                    // gpu_ostream DUMP(cout);
                     gpu_for_global(treerange.first, treerange.second, [&](gpu_uint parent) {
                         const gpu_uint first_child = treebegin_next + 2 * (parent - treerange.first);
 
@@ -1892,12 +1755,6 @@ struct Cosmos : public CosmosData<T>
                                 gpu_assert(tree[parent].pbegin == old_p_range[old_node_p[parent]].first);
                                 gpu_assert(tree[parent].pend == old_p_range[old_node_p[parent]].second);
                                 end = old_p_range[old_children[old_node_p[parent]][0]].second;
-                                // old_node_p[first_child] = old_children[old_node_p[parent]][0];
-                                // old_node_p[first_child+1] = old_children[old_node_p[parent]][1];
-                                // DUMP << "gid=" << global_id() << "setting old_node_p[" << first_child << "]=" <<
-                                // old_node_p[first_child]
-                                //<< " and old_node_p[" << first_child+1 << "]=" << old_node_p[first_child+1]
-                                //<< endl;
                             }
                             gpu_else
                             {
@@ -1909,8 +1766,11 @@ struct Cosmos : public CosmosData<T>
                                 {
                                     gpu_while(true)
                                     {
+                                        allow_preload();
+
                                         gpu_while(a != b)
                                         {
+                                            allow_preload();
                                             gpu_if(rot(x[a], mod3)[0] >= tree[parent].rcenter[0])
                                             {
                                                 gpu_break();
@@ -1919,6 +1779,7 @@ struct Cosmos : public CosmosData<T>
                                         }
                                         gpu_while(a != b)
                                         {
+                                            allow_preload();
                                             gpu_if(rot(x[b - 1], mod3)[0] < tree[parent].rcenter[0])
                                             {
                                                 gpu_break();
@@ -1983,6 +1844,22 @@ struct Cosmos : public CosmosData<T>
                         }
                     };
 
+#if SURROUNDING2
+                    array<array<gpu_uint, 6>, 2> surr_tmp;
+                    for (Tuint c = 0; c < 2; ++c)
+                    {
+                        surr_tmp[c] = {
+                            get_child(surrounding2_buf[parent][2], c),
+                            get_child(surrounding2_buf[parent][3], c),
+                            get_child(surrounding2_buf[parent][4], c),
+                            get_child(surrounding2_buf[parent][5], c),
+                            get_child(parent, 1 - c),
+                            get_child(surrounding2_buf[parent][c], 1 - c),
+                        };
+                    }
+
+#endif
+
                     for (Tuint c = 0; c < 2; ++c)
                     {
                         gpu_uint self = get_child(parent, c);
@@ -2012,37 +1889,30 @@ struct Cosmos : public CosmosData<T>
                                 gpu_uint uncle = surrounding_link(parent, parent_si_p - vdata.vicinity_vec.begin());
                                 surrounding_link(self, si) = get_child(uncle, (childvec[2] + c) % 2);
                             }
-                            /*
-                                            gpu_assert(
-                                                surrounding_link(self, si) < 2u
-                                                || (vdata.make_real(childvec, halflen * 2)
-                                                    - (dest_tree[surrounding_link(self, si)].rcenter -
-                               dest_tree[self].rcenter)) .squaredNorm() < 1E-4f * halflen);
-                            */
                         }
 #endif
 #if SURROUNDING2
-                        surrounding2_buf[self * 6 + 0] = get_child(surrounding2_buf[parent * 6 + 2], c);
-                        surrounding2_buf[self * 6 + 1] = get_child(surrounding2_buf[parent * 6 + 3], c);
-                        surrounding2_buf[self * 6 + 2] = get_child(surrounding2_buf[parent * 6 + 4], c);
-                        surrounding2_buf[self * 6 + 3] = get_child(surrounding2_buf[parent * 6 + 5], c);
-                        surrounding2_buf[self * 6 + 5 - c] = get_child(parent, 1 - c);
-                        surrounding2_buf[self * 6 + 4 + c] = get_child(surrounding2_buf[parent * 6 + c], 1 - c);
+                        surrounding2_buf[self][0] = surr_tmp[c][0];
+                        surrounding2_buf[self][1] = surr_tmp[c][1];
+                        surrounding2_buf[self][2] = surr_tmp[c][2];
+                        surrounding2_buf[self][3] = surr_tmp[c][3];
+                        surrounding2_buf[self][5 - c] = surr_tmp[c][4];
+                        surrounding2_buf[self][4 + c] = surr_tmp[c][5];
 
                         if (!use_scratch)
                         {
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 0]].rcenter[0] < tree[self].rcenter[0]
-                                       || surrounding2_buf[self * 6 + 0] < 2u);
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 1]].rcenter[0] > tree[self].rcenter[0]
-                                       || surrounding2_buf[self * 6 + 1] < 2u);
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 2]].rcenter[1] < tree[self].rcenter[1]
-                                       || surrounding2_buf[self * 6 + 2] < 2u);
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 3]].rcenter[1] > tree[self].rcenter[1]
-                                       || surrounding2_buf[self * 6 + 3] < 2u);
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 4]].rcenter[2] < tree[self].rcenter[2]
-                                       || surrounding2_buf[self * 6 + 4] < 2u);
-                            gpu_assert(tree[surrounding2_buf[self * 6 + 5]].rcenter[2] > tree[self].rcenter[2]
-                                       || surrounding2_buf[self * 6 + 5] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][0]].rcenter[0] < tree[self].rcenter[0]
+                                       || surrounding2_buf[self][0] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][1]].rcenter[0] > tree[self].rcenter[0]
+                                       || surrounding2_buf[self][1] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][2]].rcenter[1] < tree[self].rcenter[1]
+                                       || surrounding2_buf[self][2] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][3]].rcenter[1] > tree[self].rcenter[1]
+                                       || surrounding2_buf[self][3] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][4]].rcenter[2] < tree[self].rcenter[2]
+                                       || surrounding2_buf[self][4] < 2u);
+                            gpu_assert(tree[surrounding2_buf[self][5]].rcenter[2] > tree[self].rcenter[2]
+                                       || surrounding2_buf[self][5] < 2u);
                         }
 #endif
                     }
@@ -2204,40 +2074,38 @@ struct Cosmos : public CosmosData<T>
                                        const resource<T>& mass,
                                        resource<Vector<T, 3>>& force,
                                        resource<T>& potential) {
-                    vector<Tuint> cats = { 16, 8, 4, 3, 2, 1 };
+                    vector<Tuint> cat = { 16, 8, 4, 3, 2, 1 };
 
                     vector<local_mem<pair<Tuint, Tuint>>> todo;
-                    for (Tuint c : cats)
+                    for (Tuint c : cat)
                     {
                         (void)c;
                         todo.emplace_back(local_size() * 2);
                     }
-                    vector<gpu_uint> num_todo(cats.size(), 0);
+                    vector<gpu_uint> num_todo(cat.size(), 0);
 
                     auto doit = [&](Tuint c) {
                         auto [self, pbegin] = todo[c][num_todo[c] + local_id()];
-                        // vector<Vector<gpu_T, 3>> F;
-                        // vector<gpu_T> P;
                         gpu_uint N = (tree[self].pend - pbegin);
                         if (c == 0)
                         {
-                            N = min(N, cats[c]);
+                            N = min(N, cat[c]);
                         }
                         Tuint min_N = 1;
-                        if (c + 1 < cats.size())
+                        if (c + 1 < cat.size())
                         {
-                            min_N = cats[c + 1] + 1;
-                            assert(cats[c] <= 2 * cats[c + 1]);
+                            min_N = cat[c + 1] + 1;
+                            assert(cat[c] <= 2 * cat[c + 1]);
                         }
-                        if (cats[c] == min_N)
+                        if (cat[c] == min_N)
                         {
-                            gpu_assert(N == cats[c]);
-                            N = cats[c];
+                            gpu_assert(N == cat[c]);
+                            N = cat[c];
                         }
 
-                        gpu_assert(N <= cats[c]);
-                        vector<Vector<gpu_T, 3>> my_x(cats[c]);
-                        for (Tuint k = 0; k < cats[c]; ++k)
+                        gpu_assert(N <= cat[c]);
+                        vector<Vector<gpu_T, 3>> my_x(cat[c]);
+                        for (Tuint k = 0; k < cat[c]; ++k)
                         {
                             gpu_if(k < N || k < min_N)
                             {
@@ -2246,8 +2114,8 @@ struct Cosmos : public CosmosData<T>
                         }
 
 #if SURROUNDING1
-                        vector<Vector<gpu_T, 3>> F1(cats[c], { 0, 0, 0 });
-                        vector<gpu_T> P1(cats[c], 0);
+                        vector<Vector<gpu_T, 3>> F1(cat[c], { 0, 0, 0 });
+                        vector<gpu_T> P1(cat[c], 0);
                         {
                             // Starting with the self node, since it is not included in the surrounding list.
                             gpu_int si = -1;
@@ -2258,7 +2126,7 @@ struct Cosmos : public CosmosData<T>
                             gpu_bool docontinue = true;
                             gpu_while(docontinue)
                             {
-                                for (Tuint k = 0; k < cats[c]; ++k)
+                                for (Tuint k = 0; k < cat[c]; ++k)
                                 {
                                     const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
                                     F1[k] += dist
@@ -2287,8 +2155,8 @@ struct Cosmos : public CosmosData<T>
 #endif
 
 #if SURROUNDING2
-                        vector<Vector<gpu_T, 3>> F2(cats[c], { 0, 0, 0 });
-                        vector<gpu_T> P2(cats[c], 0);
+                        vector<Vector<gpu_T, 3>> F2(cat[c], { 0, 0, 0 });
+                        vector<gpu_T> P2(cat[c], 0);
                         {
                             auto vicinity = get_surrounding(self, tree[self].parent, 3, true, false);
                             private_mem<pair<Tuint, Tuint>> ranges(vicinity.size());
@@ -2307,7 +2175,7 @@ struct Cosmos : public CosmosData<T>
                             gpu_bool docontinue = true;
                             gpu_while(docontinue)
                             {
-                                for (Tuint k = 0; k < cats[c]; ++k)
+                                for (Tuint k = 0; k < cat[c]; ++k)
                                 {
                                     const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
                                     F2[k] += dist
@@ -2334,7 +2202,7 @@ struct Cosmos : public CosmosData<T>
                         }
 #endif
 
-                        for (Tuint k = 0; k < cats[c]; ++k)
+                        for (Tuint k = 0; k < cat[c]; ++k)
                         {
 #if SURROUNDING1 && SURROUNDING2
                             gpu_assert((F1[k] - F2[k]).squaredNorm() < 1.f);
@@ -2377,13 +2245,13 @@ struct Cosmos : public CosmosData<T>
                                 pend = tree[self].pend;
                             }
 
-                            for (Tuint c = 0; c < cats.size(); ++c)
+                            for (Tuint c = 0; c < cat.size(); ++c)
                             {
                                 auto run_c = [&]() {
                                     gpu_bool yes;
-                                    if (c + 1 < cats.size())
+                                    if (c + 1 < cat.size())
                                     {
-                                        yes = gpu_int(pend - pbegin) > (int)cats[c + 1];
+                                        yes = gpu_int(pend - pbegin) > (int)cat[c + 1];
                                     }
                                     else
                                     {
@@ -2394,7 +2262,7 @@ struct Cosmos : public CosmosData<T>
                                     gpu_if(yes)
                                     {
                                         todo[c][i] = { self, pbegin };
-                                        pbegin += cats[c];
+                                        pbegin += cat[c];
                                     }
 
                                     gpu_if(num_todo[c] >= local_size())
@@ -2408,7 +2276,7 @@ struct Cosmos : public CosmosData<T>
 
                                 if (c == 0)
                                 {
-                                    gpu_while(work_group_any(gpu_int(pend - pbegin) > (int)cats[0] + (int)cats[1]))
+                                    gpu_while(work_group_any(gpu_int(pend - pbegin) > (int)cat[0] + (int)cat[1]))
                                     {
                                         run_c();
                                     }
@@ -2422,7 +2290,7 @@ struct Cosmos : public CosmosData<T>
                     }
 
                     local_barrier(memory::threadgroup);
-                    for (Tuint c = 0; c < cats.size(); ++c)
+                    for (Tuint c = 0; c < cat.size(); ++c)
                     {
                         gpu_if(local_id() < num_todo[c])
                         {
@@ -2436,6 +2304,8 @@ struct Cosmos : public CosmosData<T>
                 policy, device, [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
                     gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
                         gpu_assert(this->tree[parent].need_split);
+
+                        const auto parent_treenode = force_tree[parent % force_tree.size()];
 
 #if SURROUNDING1
                         array<gpu_force_multipole_f32, 2> new_multipole_f32_1 = zero;
@@ -2529,10 +2399,7 @@ struct Cosmos : public CosmosData<T>
 #endif
 
                             Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
-                            new_multipole += force_tree[parent % force_tree.size()]
-                                                 .rot()
-                                                 .scale_loc(pow<1, 3>(2.0))
-                                                 .shift_loc(shiftvec);
+                            new_multipole += parent_treenode.rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
 
                             if (!with_potential)
                             {
@@ -2559,7 +2426,6 @@ struct Cosmos : public CosmosData<T>
 
         futures.push(update_tree_1.assign(policy, device, [this](const resource<Vector<T, 3>>& x) {
             auto next_p = scratch.begin() + scratch_offset_next_p;
-            // auto num_removed = scratch.begin() + scratch_offset_num_removed;
             auto particle_list = scratch.begin() + scratch_offset_particle_list;
             auto nodelink = scratch.begin() + scratch_offset_nodelink;
 
@@ -2567,7 +2433,6 @@ struct Cosmos : public CosmosData<T>
                 gpu_uint node = nodelink[p];
                 gpu_uint depth = this->tree[node].depth;
                 gpu_signature_t new_sig = calc_sig<signature_t>(x[p], MAX_DEPTH());
-                // plist[p].first = new_sig;
 
                 gpu_signature_t shifted_sig = new_sig >> ((Tuint)sizeof(signature_t) * 8 - depth);
                 gpu_signature_t sig_change = shifted_sig ^ tree[node].signature;
@@ -2587,13 +2452,13 @@ struct Cosmos : public CosmosData<T>
                         sig_change /= 2;
                     }
 
-                    gpu_uint child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
+                    gpu_uint child = gpu_array_access(this->tree[i].children, (new_sig & bit) != 0);
                     // Going down to the new leaf.
                     gpu_while(child != 0)
                     {
                         i = child;
                         bit >>= 1;
-                        child = get_children_p(this->tree.begin() + i)[(new_sig & bit) != 0];
+                        child = gpu_array_access(this->tree[i].children, (new_sig & bit) != 0);
                     }
 
                     // Add to linked list of particles that are to be added to node i.
@@ -2604,10 +2469,7 @@ struct Cosmos : public CosmosData<T>
 
         futures.push(update_tree_upwards.assign(
             policy, device, [this](pair<gpu_uint, gpu_uint> leaf_range, pair<gpu_uint, gpu_uint> withchild_range) {
-                // gpu_ostream DUMP(cout);
-                // auto num_added = scratch.begin();
                 auto next_p = scratch.begin() + scratch_offset_next_p;
-                // auto num_removed = scratch.begin() + scratch_offset_num_removed;
                 auto particle_list = scratch.begin() + scratch_offset_particle_list;
                 auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
 
@@ -2637,14 +2499,10 @@ struct Cosmos : public CosmosData<T>
                         num_p += new_num_p[child];
                     }
                     new_num_p[self] = num_p;
-
-                    // DUMP << "upwards_split. depth=" << this->tree[self].depth << ", new_num_p[" << self << "]=" <<
-                    // new_num_p[self] << "\n";
                 });
             }));
 
         futures.push(update_tree_downwards.assign(policy, device, [this](pair<gpu_uint, gpu_uint> treerange_parent) {
-            // gpu_ostream DUMP(cout);
             auto new_num_p = scratch.begin() + scratch_offset_new_num_p;
             auto old_p_range = reinterpret<gpu_type<pair<Tuint, Tuint>*>>(scratch.begin() + scratch_offset_old_p_range);
 
@@ -2657,12 +2515,6 @@ struct Cosmos : public CosmosData<T>
                     this->tree[self].pbegin = pbegin;
                     pbegin += new_num_p[self];
                     this->tree[self].pend = pbegin;
-                    /*
-                      DUMP << "downwards. depth=" << this->tree[self].depth
-                     << ", self=" << self
-                     << ", new_num_p=" << new_num_p[self]
-                     << ", pbegin=" << this->tree[self].pbegin << ", pend=" << this->tree[self].pend << "\n";
-                    */
                 }
             });
         }));
