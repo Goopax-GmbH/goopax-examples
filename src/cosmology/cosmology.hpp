@@ -23,6 +23,8 @@
 #define MULTIPOLE_ORDER 4
 #define HAVE_BFLOAT16 1
 
+#define CONSTANT_MASS 1
+
 constexpr unsigned min_tree_depth = 10;
 
 using Eigen::Vector;
@@ -50,6 +52,8 @@ using gpu_signature_t = typename make_gpu<signature_t>::type;
 
 const float top_halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
+
+PARAMOPT<Tfloat> SMOOTHING("smoothing", 1E-20f);
 
 template<class T>
 Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)
@@ -399,7 +403,11 @@ struct CosmosData
 #if CALC_POTENTIAL
     buffer<T> potential;
 #endif
+#if CONSTANT_MASS
+    T constantMass;
+#else
     buffer<T> mass;
+#endif
     buffer<Vector<T, 3>> force;
     buffer<T> tmps;
 
@@ -409,7 +417,9 @@ struct CosmosData
 
         swap(x, force);
         swap(v, force);
+#if !CONSTANT_MASS
         swap(mass, tmps);
+#endif
         if (preserve_potential)
         {
             swap(potential, tmps);
@@ -680,8 +690,12 @@ struct Cosmos : public CosmosData<T>
                       Tuint treebegin_next,
                       Tuint8_t depth_sublevel,
                       buffer<Vector<T, 3>>& x,
-                      buffer<Vector<T, 3>>& v,
-                      buffer<T>& mass)>,
+                      buffer<Vector<T, 3>>& v
+#if !CONSTANT_MASS
+                      ,
+                      buffer<T>& mass
+#endif
+                      )>,
           3>
         treecount4;
 
@@ -690,8 +704,14 @@ struct Cosmos : public CosmosData<T>
     kernel<void(pair<Tuint, Tuint> treerange_parent, pair<Tuint, Tuint> treerange)> make_surrounding;
     kernel<void(pair<Tuint, Tuint> treerange_parent, pair<Tuint, Tuint> treerange)> make_surrounding_with_scratch;
 
-    array<kernel<void(
-              const buffer<Vector<T, 3>>& x, const buffer<T>& mass, buffer<Vector<T, 3>>& force, buffer<T>& potential)>,
+    array<kernel<void(const buffer<Vector<T, 3>>& x
+#if !CONSTANT_MASS
+                      ,
+                      const buffer<T>& mass
+#endif
+                      ,
+                      buffer<Vector<T, 3>>& force,
+                      buffer<T>& potential)>,
           2>
         handle_particles_direct2;
 
@@ -705,7 +725,9 @@ struct Cosmos : public CosmosData<T>
 
     kernel<double(const buffer<Vector<T, 3>>& x,
                   const buffer<Vector<T, 3>>& force,
+#if !CONSTANT_MASS
                   const buffer<T>& mass,
+#endif
                   const buffer<T>& potential,
 #if CALC_POTENTIAL
                   goopax_future<double>& poterr,
@@ -1008,8 +1030,12 @@ struct Cosmos : public CosmosData<T>
                                       treerange.second,
                                       depth + 1,
                                       this->x,
-                                      this->v,
-                                      this->mass);
+                                      this->v
+#if !CONSTANT_MASS
+                                      ,
+                                      this->mass
+#endif
+                );
 #if WITH_TIMINGS
                 device.wait_all();
                 auto g7 = steady_clock::now();
@@ -1095,7 +1121,9 @@ struct Cosmos : public CosmosData<T>
             verify.assign(device,
                           [this](const resource<Vector<T, 3>>& x,
                                  const resource<Vector<T, 3>>& force,
+#if !CONSTANT_MASS
                                  const resource<T>& mass,
+#endif
                                  const resource<T>& potential,
 #if CALC_POTENTIAL
                                  gather_add<double>& poterr,
@@ -1113,8 +1141,14 @@ struct Cosmos : public CosmosData<T>
                                       Vector<gpu_double, 3> dist = (x[b] - x[a]).template cast<gpu_double>();
                                       gpu_if(a != b)
                                       {
-                                          F += mass[b] * dist * pow<-3, 2>(dist.squaredNorm() + 1E-20);
-                                          P += -mass[b] * pow<-1, 2>(dist.squaredNorm() + 1E-20);
+#if CONSTANT_MASS
+                                          const gpu_T mass_b = this->constantMass;
+#else
+					const gpu_T mass_b = mass[b];
+#endif
+
+                                          F += mass_b * dist * pow<-3, 2>(dist.squaredNorm() + SMOOTHING());
+                                          P += -mass_b * pow<-1, 2>(dist.squaredNorm() + SMOOTHING());
                                       }
                                   });
                                   ret += (force[a].template cast<gpu_double>() - F).squaredNorm();
@@ -1132,7 +1166,9 @@ struct Cosmos : public CosmosData<T>
         goopax_future<double> poterr;
         Tdouble tot = verify(this->x,
                              this->force,
+#if !CONSTANT_MASS
                              this->mass,
+#endif
                              this->potential,
 #if CALC_POTENTIAL
                              poterr,
@@ -1152,7 +1188,15 @@ struct Cosmos : public CosmosData<T>
     buffer<Tuint> scratch;
     buffer<scratch_treenode<T>> scratch_tree;
 
-    array<kernel<void(array<Tuint, 3> treerange, T scale, const buffer<Vector<T, 3>>& x, const buffer<T>& mass)>, 3>
+    array<kernel<void(array<Tuint, 3> treerange,
+                      T scale,
+                      const buffer<Vector<T, 3>>& x
+#if !CONSTANT_MASS
+                      ,
+                      const buffer<T>& mass
+#endif
+                      )>,
+          3>
         upwards;
 
     array<kernel<void(pair<Tuint, Tuint> split_range)>, 2> downwards2;
@@ -1201,7 +1245,14 @@ struct Cosmos : public CosmosData<T>
 
             for (Tuint depth = this->treeranges.size() - 1; depth != Tuint(-1); --depth)
             {
-                upwards[depth % 3](this->treeranges_withchild_nochild[depth], scale, this->x, this->mass);
+                upwards[depth % 3](this->treeranges_withchild_nochild[depth],
+                                   scale,
+                                   this->x
+#if !CONSTANT_MASS
+                                   ,
+                                   this->mass
+#endif
+                );
 
                 scale *= pow<-1, 3>(2.0);
             }
@@ -1212,7 +1263,14 @@ struct Cosmos : public CosmosData<T>
         auto t2 = steady_clock::now();
 #endif
 
-        this->handle_particles_direct2[with_potential](this->x, this->mass, this->force, this->potential);
+        this->handle_particles_direct2[with_potential](this->x
+#if !CONSTANT_MASS
+                                                       ,
+                                                       this->mass
+#endif
+                                                       ,
+                                                       this->force,
+                                                       this->potential);
 
 #if WITH_TIMINGS
         device.wait_all();
@@ -1325,8 +1383,10 @@ struct Cosmos : public CosmosData<T>
         swap(this->x, this->force);
         this->apply_vec2(this->v, this->force);
         swap(this->v, this->force);
+#if !CONSTANT_MASS
         this->apply_scalar2(this->mass, this->tmps);
         swap(this->mass, this->tmps);
+#endif
         if (preserve_potential)
         {
             this->apply_scalar2(this->potential, this->tmps);
@@ -1736,8 +1796,12 @@ struct Cosmos : public CosmosData<T>
                              gpu_uint treebegin_next,
                              gpu_uint8 depth_sublevel,
                              resource<Vector<T, 3>>& x,
-                             resource<Vector<T, 3>>& v,
-                             resource<T>& mass) {
+                             resource<Vector<T, 3>>& v
+#if !CONSTANT_MASS
+                             ,
+                             resource<T>& mass
+#endif
+                ) {
                     gpu_for_global(treerange.first, treerange.second, [&](gpu_uint parent) {
                         const gpu_uint first_child = treebegin_next + 2 * (parent - treerange.first);
 
@@ -1794,7 +1858,9 @@ struct Cosmos : public CosmosData<T>
                                         gpu_assert(a < b);
                                         swap(v[a], v[b]);
                                         swap(x[a], x[b]);
+#if !CONSTANT_MASS
                                         swap(mass[a], mass[b]);
+#endif
                                         ++a;
                                     }
                                 }
@@ -1973,8 +2039,12 @@ struct Cosmos : public CosmosData<T>
                 device,
                 [mod3, this](array<gpu_uint, 3> treeranges_withchild_nochild,
                              gpu_T scale,
-                             const resource<Vector<T, 3>>& x,
-                             const resource<T>& mass) {
+                             const resource<Vector<T, 3>>& x
+#if !CONSTANT_MASS
+                             ,
+                             const resource<T>& mass
+#endif
+                ) {
                     gpu_for_global(treeranges_withchild_nochild[0], treeranges_withchild_nochild[1], [&](gpu_uint t) {
                         gpu_matter_multipole Msum_r = zero;
 
@@ -1995,7 +2065,14 @@ struct Cosmos : public CosmosData<T>
                         gpu_for(this->tree[t].pbegin, this->tree[t].pend, [&](gpu_uint p) {
                             allow_preload();
                             Msum_r += gpu_matter_multipole::from_particle(
-                                ((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval(), mass[p]);
+                                ((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval()
+#if CONSTANT_MASS
+                                    ,
+                                this->constantMass
+#else
+				, mass[p]
+#endif
+                            );
                         });
                         matter_tree[t] = Msum_r;
                     });
@@ -2071,7 +2148,9 @@ struct Cosmos : public CosmosData<T>
                 policy,
                 device,
                 [this, with_potential](const resource<Vector<T, 3>>& x,
+#if !CONSTANT_MASS
                                        const resource<T>& mass,
+#endif
                                        resource<Vector<T, 3>>& force,
                                        resource<T>& potential) {
                     vector<Tuint> cat = { 16, 8, 4, 3, 2, 1 };
@@ -2129,13 +2208,19 @@ struct Cosmos : public CosmosData<T>
                                 for (Tuint k = 0; k < cat[c]; ++k)
                                 {
                                     const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
+#if CONSTANT_MASS
+                                    const gpu_T mass_other = constantMass;
+#else
+                                    const gpu_T mass_other = mass[other_p];
+#endif
+
                                     F1[k] += dist
-                                             * (mass[other_p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
-                                                * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
+                                             * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
+                                                * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
                                     P1[k] += cond(dist.squaredNorm() == 0,
                                                   0.f,
-                                                  -(mass[other_p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
+                                                  -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
                                 }
                                 ++other_p;
                                 gpu_while(other_p == other_pend)
@@ -2178,13 +2263,19 @@ struct Cosmos : public CosmosData<T>
                                 for (Tuint k = 0; k < cat[c]; ++k)
                                 {
                                     const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
+
+#if CONSTANT_MASS
+                                    const gpu_T mass_other = this->constantMass;
+#else
+                                    const gpu_T mass_other = mass[other_p];
+#endif
                                     F2[k] += dist
-                                             * (mass[other_p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)
-                                                * pow2(pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
+                                             * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
+                                                * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
                                     P2[k] += cond(dist.squaredNorm() == 0,
                                                   0.f,
-                                                  -(mass[other_p] * pow<-1, 2>(dist.squaredNorm() + 1E-20f)));
+                                                  -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
                                 }
                                 ++other_p;
                                 gpu_while(other_p == other_pend)

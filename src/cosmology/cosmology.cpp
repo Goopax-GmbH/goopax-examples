@@ -164,7 +164,7 @@ struct
 void read_music2_hdf5(const std::string& filename,
                       std::vector<Vector<Tfloat, 3>>& positions,
                       std::vector<Vector<Tfloat, 3>>& velocities,
-                      vector<Tfloat>& mass,
+                      Tfloat& mass,
                       int part_type = 1)
 {
     // constexpr float boxlength = 100*1000;
@@ -353,50 +353,37 @@ void read_music2_hdf5(const std::string& filename,
         v *= cosmic.a;
     }
     cosmic.density = cosmic.omega_m * 3 * pow2(cosmic.H0) / (8 * PI * G_) * pow3(a_);
-    mass.assign(positions.size(), cosmic.density * pow3(cosmic.box_size) / N);
+    mass = cosmic.density * pow3(cosmic.box_size) / N;
 }
 
-template<typename T, unsigned int max_multipole>
-void generate_IC_HDF5(Cosmos<T, max_multipole>& cosmos, filesystem::path fn)
+template<typename T>
+void generate_IC_HDF5(CosmosData<T>& cosmos, filesystem::path fn)
 {
     vector<Vector<Tfloat, 3>> pos, vel;
-    vector<Tfloat> mass;
+    Tfloat mass;
     read_music2_hdf5(fn, pos, vel, mass);
 
     cout << "pos.size()=" << pos.size() << endl;
     cout << "vel.size()=" << vel.size() << endl;
 
-    if (pos.size() != cosmos.num_particles)
+    if (pos.size() != cosmos.x.size())
     {
         cout << "Number of particles does not match. pos.size()=" << pos.size()
-             << ", cosmos.num_particles=" << cosmos.num_particles << endl;
+             << ", cosmos.num_particles=" << cosmos.x.size() << endl;
         exit(0);
     }
-    /*
-    {
 
-      ofstream PLOT("plot");
-    for (uint k=0; k<pos.size(); ++k)
-      {
-        PLOT << pos[k][0]
-         << " " << pos[k][1]
-         << " " << pos[k][2] << endl;
-      }
-    }
-    */
-
-    for (Tuint k = 0; k < 100; ++k)
-    {
-        cout << "k=" << k << ": x=" << pos[k] << ", v=" << vel[k] << ", mass=" << mass[k] << endl;
-    }
-
-    cosmos.x.copy_from_host(pos.data());
-    cosmos.v.copy_from_host(vel.data());
-    cosmos.mass.copy_from_host(mass.data());
+    cosmos.x = std::move(pos);
+    cosmos.v = std::move(vel);
+#if CONSTANT_MASS
+    cosmos.constantMass = mass;
+#else
+    cosmos.mass.fill(mass);
+#endif
 }
 
-template<typename T, unsigned int max_multipole>
-void generate_IC(Cosmos<T, max_multipole>& cosmos, const char* filename = nullptr)
+template<typename T>
+void generate_IC(CosmosData<T>& cosmos, const char* filename = nullptr)
 {
     cout << "generating initial conditions..." << flush;
     size_t N = cosmos.x.size();
@@ -518,7 +505,11 @@ void generate_IC(Cosmos<T, max_multipole>& cosmos, const char* filename = nullpt
             cosmos.v.fill({ 0, 0, 0 });
         }
     }
+#if CONSTANT_MASS
+    cosmos.constantMass = 1.0 / N;
+#else
     cosmos.mass.fill(1.0 / N);
+#endif
     cout << "ok" << endl;
 }
 
@@ -608,7 +599,9 @@ int main(int argc, char** argv)
             vulkanData.v.assign(window->device, NUM_PARTICLES(), params);
             vulkanData.force.assign(window->device, NUM_PARTICLES(), params);
             vulkanData.potential.assign(window->device, NUM_PARTICLES(), params);
+#if !CONSTANT_MASS
             vulkanData.mass.assign(window->device, NUM_PARTICLES(), params);
+#endif
             vulkanData.tmps.assign(window->device, NUM_PARTICLES(), params);
 
             if (device.get_envmode() == env_CUDA)
@@ -627,7 +620,9 @@ int main(int argc, char** argv)
                 link(vulkanData.v, initData.v);
                 link(vulkanData.force, initData.force);
                 link(vulkanData.potential, initData.potential);
+#if !CONSTANT_MASS
                 link(vulkanData.mass, initData.mass);
+#endif
                 link(vulkanData.tmps, initData.tmps);
             }
             else
@@ -661,7 +656,9 @@ int main(int argc, char** argv)
             initData.v.assign(device, NUM_PARTICLES);
             initData.force.assign(device, NUM_PARTICLES);
             initData.potential.assign(device, NUM_PARTICLES);
+#if !CONSTANT_MASS
             initData.mass.assign(device, NUM_PARTICLES);
+#endif
             initData.tmps.assign(device, NUM_PARTICLES);
         }
 
@@ -670,30 +667,30 @@ int main(int argc, char** argv)
         size_t tree_size = NUM_PARTICLES() * TREE_FACTOR() + 100000 + (2 << min_tree_depth);
         size_t min_force_tree_size = tree_size * FORCE_TREE_FACTOR();
 
-        Cosmos<T, MULTIPOLE_ORDER> cosmos(std::move(initData),
-
-                                          tree_size,
-                                          min_force_tree_size,
-                                          MAX_DISTFAC(),
-                                          MAX_NODESIZE());
-
         if (argc >= 2)
         {
             fs::path fn = argv[1];
             cout << "fn=" << fn << ", ext=" << fn.extension();
             if (fn.extension() == ".hdf5")
             {
-                generate_IC_HDF5(cosmos, fn);
+                generate_IC_HDF5(initData, fn);
             }
             else
             {
-                generate_IC(cosmos, argv[1]);
+                generate_IC(initData, argv[1]);
             }
         }
         else
         {
-            generate_IC(cosmos);
+            generate_IC(initData);
         }
+
+        Cosmos<T, MULTIPOLE_ORDER> cosmos(std::move(initData),
+
+                                          tree_size,
+                                          min_force_tree_size,
+                                          MAX_DISTFAC(),
+                                          MAX_NODESIZE());
 
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
         if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
