@@ -53,7 +53,7 @@ using gpu_signature_t = typename make_gpu<signature_t>::type;
 const float top_halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
 
-PARAMOPT<Tfloat> SMOOTHING("smoothing", 1E-20f);
+PARAMOPT<Tfloat> SMOOTHING("smoothing", 1E-5f);
 
 template<class T>
 Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)

@@ -92,9 +92,8 @@ int main(int argc, char** argv)
 
     buffer<Vector<float, 3>> x(window->device, N, params);
     buffer<Vector<float, 3>> x2(window->device, N, params);
-    // ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
 
-    goopax_draw::vulkan::Renderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window), 100, { 1000, 1000 });
+    goopax_draw::vulkan::Renderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window), 1, { 1000, 500 });
 #else
     opengl_buffer<Vector3<float>> x(device, N);
     opengl_buffer<Vector3<float>> x2(device, N);
@@ -195,11 +194,13 @@ int main(int argc, char** argv)
             framecount = 0;
             frametime = now;
 
+#if WITH_VULKAN
             stringstream ss;
-            ss << "hello world" << endl << "device: " << device.name() << endl << "fps: " << rate;
+            ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
 
             auto size = window->get_size();
-            Renderer.updateText(ss.str(), { size[0] - 500, size[1] - 300 }, { 900, 400 }, 40);
+            Renderer.updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
+#endif
         }
 
 #if WITH_METAL

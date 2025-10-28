@@ -524,6 +524,7 @@ int main(int argc, char** argv)
 
     if constexpr (false)
     {
+        // enable this to test the multipole implementation
         using T = debugtype<double>;
 
         test<multipole<T>>();
@@ -545,7 +546,18 @@ int main(int argc, char** argv)
 #endif
         );
 
-        goopax_device device = default_device(env_CUDA);
+        goopax_device device;
+
+        for (auto d : devices(env_CUDA))
+        {
+            cout << "Found cuda device " << d.name() << endl;
+            if (d.uuid() == window->device.uuid())
+            {
+                cout << "Using." << endl;
+                device = d;
+                break;
+            }
+        }
         if (!device.valid())
         {
             device = window->device;
@@ -910,16 +922,17 @@ int main(int argc, char** argv)
 
                 stringstream ss;
 
+                ss << "N-Body Simulation (FMM)" << endl
+                   << "device: " << device.name() << endl
+                   << "number of particles: " << cosmos.x.size() << endl
+                   << "step: " << step << endl
+                   << "steps per second: " << rate << endl;
+
                 if (is_cosmic)
                 {
                     double caltime = cosmic.t - cosmic.today + 2025 * yr_;
 
-                    ss << "N-Body Simulation (Fast Multipole)" << endl
-                       << "device: " << device.name() << endl
-                       << "number of particles: " << cosmos.x.size() << endl
-                       << "step: " << step << endl
-                       << "steps per second: " << rate << endl
-                       << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
+                    ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
                        << " (" << static_cast<ssize_t>(abs(caltime + (caltime >= 0 ? 1.0 : 0.0)) / yr_)
                        << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
                        << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
@@ -927,13 +940,6 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    ss << "N-Body Simulation" << endl
-                       << "Fast Multipole (" << MULTIPOLE_ORDER << "th order)" << endl
-                       << "device: " << device.name() << endl
-                       << "number of particles: " << cosmos.x.size() << endl
-                       << "simulation step: " << step << endl
-                       << "fps: " << rate << endl
-                       << endl;
                 }
 
 #if WITH_VULKAN
