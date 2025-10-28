@@ -94,7 +94,7 @@ int main(int argc, char** argv)
     buffer<Vector<float, 3>> x2(window->device, N, params);
     // ranges::fill(buffer_map(colors), Vector<float, 4>{ 1.f, 0.6f, 0.7f, 1.0f });
 
-    VulkanRenderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window));
+    goopax_draw::vulkan::Renderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window), 100, { 1000, 1000 });
 #else
     opengl_buffer<Vector3<float>> x(device, N);
     opengl_buffer<Vector3<float>> x2(device, N);
@@ -205,7 +205,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
         Renderer.render(x);
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        Renderer.render(x, distance, theta, xypos, 1.f);
+        Renderer.render(x, distance, theta, xypos);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);

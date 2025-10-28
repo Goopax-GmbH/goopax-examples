@@ -593,7 +593,11 @@ int main(int argc, char** argv)
             };
             if (device.get_envmode() == env_CUDA)
             {
+#ifdef _WIN32
+                params.vulkan.vkExternalMemoryHandleTypeFlags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#else
                 params.vulkan.vkExternalMemoryHandleTypeFlags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
             }
             vulkanData.x.assign(window->device, NUM_PARTICLES(), params);
             vulkanData.v.assign(window->device, NUM_PARTICLES(), params);
@@ -607,6 +611,17 @@ int main(int argc, char** argv)
             if (device.get_envmode() == env_CUDA)
             {
                 auto link = [&](auto& vulkan, auto& cuda) {
+#ifdef _WIN32
+                    HANDLE handle;
+                    VkMemoryGetWin32HandleInfoKHR getHandleInfo = {
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
+                        .memory = get_vulkan_device_memory(vulkan),
+                        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+                    };
+                    call_vulkan(v->vkGetMemoryWin32HandleKHR(v->vkDevice, &getHandleInfo, &handle));
+
+                    cuda = vulkan.create_from_external_handle(device, handle, NUM_PARTICLES());
+#else
                     int fd;
                     VkMemoryGetFdInfoKHR getFdInfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
                                                        .memory = get_vulkan_device_memory(vulkan),
@@ -614,6 +629,7 @@ int main(int argc, char** argv)
                     call_vulkan(v->vkGetMemoryFdKHR(v->vkDevice, &getFdInfo, &fd));
 
                     cuda = vulkan.create_from_external_handle(device, fd, NUM_PARTICLES());
+#endif
                 };
 
                 link(vulkanData.x, initData.x);
