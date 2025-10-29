@@ -16,6 +16,7 @@
 #include <goopax_extra/struct_types.hpp>
 #include <random>
 #include <set>
+#include <stack>
 
 #define SURROUNDING1 0
 #define SURROUNDING2 1

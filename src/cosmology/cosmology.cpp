@@ -1,9 +1,10 @@
 #include "cosmology.hpp"
 #include "cube.hpp"
 #include "multipole_cart.hpp"
-#include <boost/iostreams/device/mapped_file.hpp>
 #include <filesystem>
+#if WITH_HDF5
 #include <hdf5.h>
+#endif
 
 namespace fs = std::filesystem;
 using Vector3f = Eigen::Vector3f;
@@ -132,7 +133,9 @@ constexpr double g_ = kg_ / 1000;
 constexpr double cm_ = m_ / 100;
 constexpr double erg_ = g_ * cm_ * cm_ / s_ / s_;
 constexpr double G_ = 6.67259E-8 * erg_ / g_ / g_ * cm_; // gravitational constant G
+#if __cpp_lib_constexpr_cmath >= 202306
 static_assert(abs(G_ - 1) < 1E-10);
+#endif
 
 bool is_cosmic = false;
 struct
@@ -161,6 +164,7 @@ struct
 
 } cosmic;
 
+#if WITH_HDF5
 void read_music2_hdf5(const std::string& filename,
                       std::vector<Vector<Tfloat, 3>>& positions,
                       std::vector<Vector<Tfloat, 3>>& velocities,
@@ -381,6 +385,7 @@ void generate_IC_HDF5(CosmosData<T>& cosmos, filesystem::path fn)
     cosmos.mass.fill(mass);
 #endif
 }
+#endif
 
 template<typename T>
 void generate_IC(CosmosData<T>& cosmos, const char* filename = nullptr)
@@ -593,6 +598,14 @@ int main(int argc, char** argv)
             metalRenderer = make_unique<particle_renderer>(dynamic_cast<sdl_window_metal&>(*window));
             //            x.assign(device, NUM_PARTICLES());
             //          color.assign(device, NUM_PARTICLES());
+            initData.x.assign(device, NUM_PARTICLES);
+            initData.v.assign(device, NUM_PARTICLES);
+            initData.force.assign(device, NUM_PARTICLES);
+            initData.potential.assign(device, NUM_PARTICLES);
+#if !CONSTANT_MASS
+            initData.mass.assign(device, NUM_PARTICLES);
+#endif
+            initData.tmps.assign(device, NUM_PARTICLES);
         }
 #endif
 #if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
@@ -699,11 +712,13 @@ int main(int argc, char** argv)
         {
             fs::path fn = argv[1];
             cout << "fn=" << fn << ", ext=" << fn.extension();
+#if WITH_HDF5
             if (fn.extension() == ".hdf5")
             {
                 generate_IC_HDF5(initData, fn);
             }
             else
+#endif
             {
                 generate_IC(initData, argv[1]);
             }
@@ -920,35 +935,39 @@ int main(int argc, char** argv)
                     last_fps_time = now;
                 }
 
-                stringstream ss;
-
-                ss << "N-Body Simulation (FMM)" << endl
-                   << "device: " << device.name() << endl
-                   << "number of particles: " << cosmos.x.size() << endl
-                   << "step: " << step << endl
-                   << "steps per second: " << rate << endl;
-
-                if (is_cosmic)
-                {
-                    double caltime = cosmic.t - cosmic.today + 2025 * yr_;
-
-                    ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
-                       << " (" << static_cast<ssize_t>(abs(caltime + (caltime >= 0 ? 1.0 : 0.0)) / yr_)
-                       << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
-                       << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
-                       << endl;
-                }
-                else
+                if (false)
                 {
                 }
-
 #if WITH_VULKAN
-                if (vulkanRenderer.get())
+                else if (vulkanRenderer.get())
                 {
+                    stringstream ss;
+
+                    ss << "N-Body Simulation (FMM)" << endl
+                       << "device: " << device.name() << endl
+                       << "number of particles: " << cosmos.x.size() << endl
+                       << "step: " << step << endl
+                       << "steps per second: " << rate << endl;
+
+                    if (is_cosmic)
+                    {
+                        double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+
+                        ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
+                           << " (" << static_cast<ssize_t>(abs(caltime + (caltime >= 0 ? 1.0 : 0.0)) / yr_)
+                           << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
+                           << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
+                           << endl;
+                    }
+
                     auto size = window->get_size();
                     vulkanRenderer->updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
                 }
 #endif
+                else
+                {
+                    window->set_title("cosmology. N=" + to_string(cosmos.x.size()) + ", fps=" + to_string(rate));
+                }
             }
 
             if (step % render_every == 0)
@@ -959,7 +978,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
                 else if (metalRenderer.get())
                 {
-                    metalRenderer->render(Cosmos.x);
+                    metalRenderer->render(cosmos.x);
                 }
 #endif
 

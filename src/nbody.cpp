@@ -200,6 +200,8 @@ int main(int argc, char** argv)
 
             auto size = window->get_size();
             Renderer.updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
+#else
+            window->set_title("nbody. N=" + to_string(N) + ", fps=" + to_string(rate));
 #endif
         }
 

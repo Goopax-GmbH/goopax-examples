@@ -1,7 +1,7 @@
 find_package(HDF5)
 
 
-add_sdl_main(cosmology glatter goopax_draw Boost::iostreams hdf5::hdf5)
+add_sdl_main(cosmology glatter goopax_draw)
 if (TARGET cosmology)
   if (TARGET opencv AND NOT GOOPAX_DEBUG)
     target_link_libraries(cosmology opencv)
@@ -9,6 +9,13 @@ if (TARGET cosmology)
   else()
     target_compile_definitions(cosmology PUBLIC -DWITH_OPENCV=0)
   endif()
+  if (TARGET hdf5::hdf5)
+    target_link_libraries(cosmology hdf5::hdf5)
+    target_compile_definitions(cosmology PUBLIC -DWITH_HDF5=1)
+  else()
+    target_compile_definitions(cosmology PUBLIC -DWITH_HDF5=0)
+  endif()
+
   if (APPLE)
     SET_SOURCE_FILES_PROPERTIES(cosmology.cpp PROPERTIES LANGUAGE OBJCXX)
   endif()

@@ -93,6 +93,8 @@ void copy_all(DEST&& d, A a, B... b)
 template <unsigned order>
 struct multipole_index
   {
+    static constexpr unsigned int index_order = order;
+    
     Tint pos;
     array<Tint, 3> e;
     array<Tint, order> i;
@@ -154,7 +156,7 @@ struct multipole_index
 	  }
 	} while (ranges::next_permutation(p).found);
 
-      ret_t ret = 0;
+        ret_t ret = static_cast<ret_t>(0);
       for (auto& q : cache)
 	{
 	  ret += static_cast<ret_t>(q.second.first) * static_cast<ret_t>(q.second.second);
@@ -169,10 +171,9 @@ struct multipole_index
   };
 
 
-
 template<typename T, typename... TPREV>
 struct
-alignas(sizeof...(TPREV)==4 ? 16 : 4)
+//alignas(sizeof...(TPREV)==4 ? 16 : 4)
 multipole<T, TPREV...> : public multipole<TPREV...>
 {
   using prev_t = multipole<TPREV...>;
@@ -222,7 +223,7 @@ multipole<T, TPREV...> : public multipole<TPREV...>
   template <typename... I>
   value_type coeff(I&&... indices) const
   {
-    array<Tint, (indices.i.size() + ...)> combined;
+    array<Tint, (std::remove_reference<decltype(indices)>::type::index_order + ...)> combined;
     copy_all(combined.begin(), (indices.i)...);
     //return this->coeff<order>(combined);
     return A[index_t::indexmap[get_index(combined)]];
@@ -300,7 +301,7 @@ public:
   template<typename FUNC>
   static auto indexsum(FUNC func)
   {
-    decltype(func(indices()[0])) ret = 0;
+    auto ret = static_cast<decltype(func(indices()[0]))>(0);
     for (auto& i : indices())
       {
 	ret += func(i) * i.factor;
@@ -419,9 +420,9 @@ public:
       {
 	shift_ext_contrib(a, M.prev());
       }
-    if constexpr (M.order == order-1 && order > 0)
+    if constexpr (MP::order == order-1 && order > 0)
       {
-	prev().template shift_ext_contrib(a, M.prev());
+	prev().shift_ext_contrib(a, M.prev());
       }
   }
 
@@ -488,7 +489,7 @@ public:
 
 	for (auto& i : indices())
 	  {
-	    Tuse contrib = 0;
+	    Tuse contrib = static_cast<Tuse>(0);
 	    
 	    contrib +=
 	      static_cast<Tuse>(factorial2(2*(MP::order + order)-1) / factorial2(static_cast<Tdouble>(2*MP::order-1)) * pow(-1, order) / factorial(order)
@@ -506,7 +507,7 @@ public:
 		  };
 		
 		contrib +=
-		  static_cast<Tuse>(factortab[order][MP::order] * pow3(inva)) * MAX::template get_t<MP::order-1>::indexsum([&](auto j) {return static_cast<Tuse>(j.prod(e)) * i.template cycle<1>([&](auto q, auto w){return static_cast<Tuse>(M.template coeff(j, q)) * static_cast<Tuse>(w.prod(e));});});
+		  static_cast<Tuse>(factortab[order][MP::order] * pow3(inva)) * MAX::template get_t<MP::order-1>::indexsum([&](auto j) {return static_cast<Tuse>(j.prod(e)) * i.template cycle<1>([&](auto q, auto w){return static_cast<Tuse>(M.coeff(j, q)) * static_cast<Tuse>(w.prod(e));});});
 	      }
 		
 	    if constexpr (order == 2)
@@ -535,7 +536,7 @@ public:
 		if constexpr (MP::order == 1)
 		  {
 		    contrib +=
-		      static_cast<Tuse>(-1.0 / 2 * pow5(inva)) * i.template cycle<1>([&](auto q, auto w) {return static_cast<Tuse>(M.template coeff(q)) * (w.i[0] == w.i[1]);});
+		      static_cast<Tuse>(-1.0 / 2 * pow5(inva)) * i.template cycle<1>([&](auto q, auto w) {return static_cast<Tuse>(M.coeff(q)) * (w.i[0] == w.i[1]);});
 		  }
 	      }
 	    if constexpr (order == 4)
@@ -543,7 +544,7 @@ public:
 		if constexpr (MP::order == 0)
 		  {
 		    contrib +=
-		      + static_cast<Tuse>(1.0 / 16 * pow5(inva) * i.template cycle<2>([&](auto q, auto w) {return static_cast<shift_t>(q.i[0] == q.i[1] && w.i[0] == w.i[1]);})) * static_cast<Tuse>(M.template coeff({}));
+		      + static_cast<Tuse>(1.0 / 16 * pow5(inva) * i.template cycle<2>([&](auto q, auto w) {return static_cast<shift_t>(q.i[0] == q.i[1] && w.i[0] == w.i[1]);})) * static_cast<Tuse>(M.coeff({}));
 		  }
 	      }
 
@@ -561,7 +562,7 @@ public:
       {
 	makelocal_add_contrib<MAX>(a, M.prev(), sum_f32, sum_bf16);
       }
-    if constexpr (M.order == MAX::order && order > 0)
+    if constexpr (MP::order == MAX::order && order > 0)
       {
 	prev().template makelocal_add_contrib<MAX>(a, M, sum_f32, sum_bf16);
       }
@@ -587,7 +588,7 @@ public:
   {
     multipole ret;
     static_cast<prev_t&>(ret) = prev_t::zero();
-    ret.A.fill(0);
+    ret.A.fill(static_cast<T>(0));
     return ret;
   }
 
