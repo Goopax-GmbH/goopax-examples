@@ -304,7 +304,7 @@ struct vicinity_data
                         {
                             vicinity_vec.push_back(ac);
                         }
-                        for (uint k = 0; k < 3; ++k)
+                        for (unsigned int k = 0; k < 3; ++k)
                         {
                             maxvec[k] = max(maxvec[k], abs(ac[k]));
                         }
@@ -650,14 +650,14 @@ struct Cosmos : public CosmosData<T>
 #if SURROUNDING2
         const_buffer_map surrounding2(this->surrounding2_buf);
 #endif
-        for (uint k = treerange.first; k < treerange.second; ++k)
+        for (unsigned int k = treerange.first; k < treerange.second; ++k)
         {
             cout << k << ": " << map[k];
             if (with_surrounding)
             {
 #if SURROUNDING1
                 cout << ". surrounding:";
-                for (uint s = 0; s < this->num_surrounding(); ++s)
+                for (unsigned int s = 0; s < this->num_surrounding(); ++s)
                 {
                     cout << " " << surrounding[k * this->num_surrounding() + s];
                 }
@@ -1285,7 +1285,7 @@ struct Cosmos : public CosmosData<T>
         {
             Tdouble scale = 1.0 / top_halflen * pow<1, 3>(2.0);
 
-            for (uint depth = 1; depth < this->treeranges.size(); ++depth)
+            for (unsigned int depth = 1; depth < this->treeranges.size(); ++depth)
             {
                 scale *= pow<1, 3>(2.0);
 
@@ -1496,7 +1496,7 @@ struct Cosmos : public CosmosData<T>
 
 #if SURROUNDING1
                     gpu_uint totnum_old = scratch_tree[self].pend - scratch_tree[self].pbegin;
-                    for (uint si = 0; si < num_surrounding(); ++si)
+                    for (unsigned int si = 0; si < num_surrounding(); ++si)
                     {
                         gpu_uint cousin = surrounding_link(self, si);
                         totnum_old += scratch_tree[cousin].pend - scratch_tree[cousin].pbegin;
@@ -1609,7 +1609,7 @@ struct Cosmos : public CosmosData<T>
 #if SURROUNDING1
                         gpu_bool has_children1 = scratch_tree[self].need_split;
                         {
-                            for (uint si = 0; si < num_surrounding(); ++si)
+                            for (unsigned int si = 0; si < num_surrounding(); ++si)
                             {
                                 gpu_uint cousin = surrounding_link(self, si);
                                 has_children1 = has_children1 || (scratch_tree[cousin].need_split);
@@ -2102,7 +2102,7 @@ struct Cosmos : public CosmosData<T>
 
 #ifndef NDEBUG
                                 gpu_bool ok = true;
-                                for (uint k = 0; k < 3; ++k)
+                                for (unsigned int k = 0; k < 3; ++k)
                                 {
                                     ok = ok
                                          && (abs((rot(x[pa], mod3) - this->tree[self].rcenter)[k])
@@ -2599,7 +2599,7 @@ struct Cosmos : public CosmosData<T>
 
             gpu_for_global(treerange_parent.first, treerange_parent.second, [&](gpu_uint parent) {
                 gpu_uint pbegin = this->tree[parent].pbegin;
-                for (uint child = 0; child < 2; ++child)
+                for (unsigned int child = 0; child < 2; ++child)
                 {
                     gpu_uint self = tree[parent].children[child];
                     old_p_range[self] = { tree[self].pbegin, tree[self].pend };

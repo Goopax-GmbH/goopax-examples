@@ -408,7 +408,7 @@ void generate_IC(CosmosData<T>& cosmos, const char* filename = nullptr)
         cv::Mat image_gray;
         cv::cvtColor(image_color, image_gray, cv::COLOR_BGR2GRAY);
 
-        uint max_extent = max(image_gray.rows, image_gray.cols);
+        unsigned int max_extent = max(image_gray.rows, image_gray.cols);
         Vector<double, 3> cm = { 0, 0, 0 };
         buffer_map cx(cosmos.x);
         for (auto& r : cx)
@@ -786,9 +786,9 @@ int main(int argc, char** argv)
         int mouse_button_down = 0;
         Vector<float, 2> xypos = { 0, 0 };
 
-        constexpr uint make_tree_every = 2;
-        constexpr uint render_every = 1;
-        constexpr uint pot_every = 4;
+        constexpr unsigned int make_tree_every = 2;
+        constexpr unsigned int render_every = 1;
+        constexpr unsigned int pot_every = 4;
 
         cosmos.make_initial_tree();
 #if WITH_VULKAN

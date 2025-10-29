@@ -134,7 +134,7 @@ struct multipole_index
 		*pq++ = i[k];
 	    }
 	  {
-	    uint check = 0;
+	    unsigned int check = 0;
 	    for (auto& qq : multipole_index<K>::indices)
 	      {
 		for (auto& ww : multipole_index<order-K>::indices)
@@ -206,7 +206,7 @@ multipole<T, TPREV...> : public multipole<TPREV...>
   Tuint get_index(array<Tint, order> indices) const
   {
     Tuint index = 0;
-    for (uint i = 0; i < order; ++i)
+    for (unsigned int i = 0; i < order; ++i)
       {
 	index = index * 3 + indices[i];
       }
@@ -669,7 +669,7 @@ const vector<multipole_index<order>> multipole_index<order>::indices = []()
       array<Tint, 3> cur = { 0, 0, 0 };
       array<Tint, order> indices;
       ranges::fill(indices, 0);
-      for (uint l = 0; l < order; ++l)
+      for (unsigned int l = 0; l < order; ++l)
         {
 	  indices[l] = k2 % 3;
 	  ++cur[k2 % 3];
