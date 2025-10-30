@@ -404,9 +404,7 @@ struct CosmosData
 #if CALC_POTENTIAL
     buffer<T> potential;
 #endif
-#if CONSTANT_MASS
-    T constantMass;
-#else
+#if !CONSTANT_MASS
     buffer<T> mass;
 #endif
     buffer<Vector<T, 3>> force;
@@ -444,8 +442,8 @@ struct Cosmos : public CosmosData<T>
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #elif MULTIPOLE_ORDER == 4
 #if HAVE_BFLOAT16
-    using matter_multipole = multipole<Tbfloat16, Tbfloat16, T, T, T>;
-    using force_multipole = multipole<Tbfloat16, Tbfloat16, T, T, T>;
+    using matter_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
+    using force_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #else
@@ -461,7 +459,7 @@ struct Cosmos : public CosmosData<T>
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
 
     goopax_device device;
-    const Tuint num_particles;
+    const Tuint max_particles;
     using gpu_T = typename make_gpu<T>::type;
     const vicinity_data vdata;
 
@@ -1104,14 +1102,14 @@ struct Cosmos : public CosmosData<T>
         device.wait_all();
         auto t2 = steady_clock::now();
         cout << "\nmake_tree:\n"
-             << "  sort particles: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
-             << "  tree: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-             << "    make_surrounding[1]: " << duration_cast<chrono::milliseconds>(treetime[0]) << endl
-             << "    treecount1: " << duration_cast<chrono::milliseconds>(treetime[1]) << endl
-             << "    treecount2: " << duration_cast<chrono::milliseconds>(treetime[3]) << endl
-             << "    treecount3: " << duration_cast<chrono::milliseconds>(treetime[4]) << endl
-             << "    make_surrounding[2]: " << duration_cast<chrono::milliseconds>(treetime[5]) << endl
-             << "    treecount4: " << duration_cast<chrono::milliseconds>(treetime[6]) << endl;
+             << "  sort particles: " << duration_cast<std::chrono::microseconds>(t1 - t0) << endl
+             << "  tree: " << duration_cast<std::chrono::microseconds>(t2 - t1) << endl
+             << "    make_surrounding[1]: " << duration_cast<chrono::microseconds>(treetime[0]) << endl
+             << "    treecount1: " << duration_cast<chrono::microseconds>(treetime[1]) << endl
+             << "    treecount2: " << duration_cast<chrono::microseconds>(treetime[3]) << endl
+             << "    treecount3: " << duration_cast<chrono::microseconds>(treetime[4]) << endl
+             << "    make_surrounding[2]: " << duration_cast<chrono::microseconds>(treetime[5]) << endl
+             << "    treecount4: " << duration_cast<chrono::microseconds>(treetime[6]) << endl;
 #endif
     }
 
@@ -1143,7 +1141,7 @@ struct Cosmos : public CosmosData<T>
                                       gpu_if(a != b)
                                       {
 #if CONSTANT_MASS
-                                          const gpu_T mass_b = this->constantMass;
+                                          const gpu_T mass_b = 1;
 #else
 					const gpu_T mass_b = mass[b];
 #endif
@@ -1217,9 +1215,9 @@ struct Cosmos : public CosmosData<T>
 
     const Tuint scratch_offset_next_p = scratch_offset;
     const Tuint scratch_offset_particle_list = scratch_offset_next_p + this->tree.size();
-    const Tuint scratch_offset_nodelink = scratch_offset_particle_list + num_particles;
+    const Tuint scratch_offset_nodelink = scratch_offset_particle_list + max_particles;
 
-    const Tuint scratch_offset_new_num_p = scratch_offset_nodelink + num_particles;
+    const Tuint scratch_offset_new_num_p = scratch_offset_nodelink + max_particles;
 
     const Tuint scratch_offset_old_p_range = scratch_offset_new_num_p + this->tree.size();
     const Tuint scratch_offset_group_sum = scratch_offset_old_p_range + 2 * this->tree.size();
@@ -1317,14 +1315,12 @@ struct Cosmos : public CosmosData<T>
         }
 
 #if WITH_TIMINGS
-        // cout << "treecount: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
+        // cout << "treecount: " << duration_cast<std::chrono::microseconds>(t1 - t0) << endl;
         cout << "\ncompute_force:\n"
-             << "  upwards: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-             << "  handle_particles (direct): " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms"
-             << endl
-             << "  downwards: " << duration_cast<std::chrono::milliseconds>(time_downwards).count() << " ms" << endl
-             << "  handle_particles (multipole): " << duration_cast<std::chrono::milliseconds>(time_hp).count() << " ms"
-             << endl;
+             << "  upwards: " << duration_cast<std::chrono::microseconds>(t2 - t1) << endl
+             << "  handle_particles (direct): " << duration_cast<std::chrono::microseconds>(t3 - t2) << endl
+             << "  downwards: " << duration_cast<std::chrono::microseconds>(time_downwards) << endl
+             << "  handle_particles (multipole): " << duration_cast<std::chrono::microseconds>(time_hp) << endl;
 #endif
     }
 
@@ -1405,12 +1401,12 @@ struct Cosmos : public CosmosData<T>
 
 #if WITH_TIMINGS
         cout << "\nupdate_tree:\n"
-             << "  set_sig: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl
-             << "  update_tree_1: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl
-             << "  upwards: " << duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms" << endl
-             << "  downwards: " << duration_cast<std::chrono::milliseconds>(t4 - t3).count() << " ms" << endl
-             << "  reorder: " << duration_cast<std::chrono::milliseconds>(t5 - t4).count() << " ms" << endl
-             << "  swap_particles: " << duration_cast<std::chrono::milliseconds>(t6 - t5).count() << " ms" << endl;
+             << "  set_sig: " << duration_cast<std::chrono::microseconds>(t1 - t0) << endl
+             << "  update_tree_1: " << duration_cast<std::chrono::microseconds>(t2 - t1) << endl
+             << "  upwards: " << duration_cast<std::chrono::microseconds>(t3 - t2) << endl
+             << "  downwards: " << duration_cast<std::chrono::microseconds>(t4 - t3) << endl
+             << "  reorder: " << duration_cast<std::chrono::microseconds>(t5 - t4) << endl
+             << "  swap_particles: " << duration_cast<std::chrono::microseconds>(t6 - t5) << endl;
 #endif
     }
 
@@ -1421,15 +1417,21 @@ struct Cosmos : public CosmosData<T>
         gpu_for_global(0, in.size(), [&](gpu_uint k) { out[k] = in[new_order[k]]; });
     }
 
-    Cosmos(CosmosData<T>&& data,
+    void init(CosmosData<T>&& data)
+    {
+        static_cast<CosmosData<T>&>(*this) = std::move(data);
+    }
+
+    Cosmos(goopax_device device0,
+           size_t max_particles0,
            size_t max_treesize0,
            size_t min_force_tree_size,
            Tdouble max_distfac,
            unsigned int max_nodesize0)
+        :
 
-        : CosmosData<T>(std::move(data))
-        , device(this->x.get_device())
-        , num_particles(this->x.size())
+        device(device0)
+        , max_particles(max_particles0)
         , vdata(max_distfac)
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
@@ -2069,7 +2071,7 @@ struct Cosmos : public CosmosData<T>
                                 ((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval()
 #if CONSTANT_MASS
                                     ,
-                                this->constantMass
+                                1
 #else
 				, mass[p]
 #endif
@@ -2113,11 +2115,11 @@ struct Cosmos : public CosmosData<T>
                                 {
                                     gpu_ostream DUMP(cout);
                                     DUMP << "BAD: x[" << pa << "]=" << x[pa] << ", rotated=" << rot(x[pa], mod3)
-                                         << "\nv=" << this->v[pa] << "\nnode[" << self << "]=" << tree[self]
+                                         << "\nnode[" << self << "]=" << tree[self]
                                          << "\ndiff=" << (rot(x[pa], mod3) - this->tree[self].rcenter)
                                          << "\nhalflen3=" << halflen3 << endl;
                                 }
-                                gpu_assert(ok);
+                            // gpu_assert(ok);
 #endif
 
                                 Vector<gpu_T, 3> F =
@@ -2154,7 +2156,7 @@ struct Cosmos : public CosmosData<T>
 #endif
                                        resource<Vector<T, 3>>& force,
                                        resource<T>& potential) {
-                    vector<Tuint> cat = { 16, 8, 4, 3, 2, 1 };
+                    vector<Tuint> cat = { 16, 8 };
 
                     vector<local_mem<pair<Tuint, Tuint>>> todo;
                     for (Tuint c : cat)
@@ -2266,7 +2268,7 @@ struct Cosmos : public CosmosData<T>
                                     const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
 
 #if CONSTANT_MASS
-                                    const gpu_T mass_other = this->constantMass;
+                                    const gpu_T mass_other = 1;
 #else
                                     const gpu_T mass_other = mass[other_p];
 #endif
@@ -2368,7 +2370,8 @@ struct Cosmos : public CosmosData<T>
 
                                 if (c == 0)
                                 {
-                                    gpu_while(work_group_any(gpu_int(pend - pbegin) > (int)cat[0] + (int)cat[1]))
+                                    gpu_while(work_group_any(gpu_int(pend - pbegin)
+                                                             > (int)cat[0] + (cat.size() >= 2 ? (int)cat[1] : 0)))
                                     {
                                         run_c();
                                     }
