@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15...4.1)
 
-project(goopax_examples LANGUAGES CXX)
+project(goopax_examples LANGUAGES C CXX)
 
 if (CMAKE_VERSION VERSION_LESS "3.20")
   set (CMAKE_CXX_STANDARD 20)
@@ -73,9 +73,8 @@ if (APPLE)
 endif()
 
 if (WITH_CUDA)
-  find_package(CUDA REQUIRED)
   enable_language(CUDA)
-  set (CMAKE_CUDA_STANDARD 17)
+  set (CMAKE_CUDA_STANDARD 20)
 endif()
 
 add_subdirectory(common/draw)
@@ -152,7 +151,7 @@ macro(add_sdl_main)
 endmacro()
 
 
-if (GOOPAX_DRAW_WITH_OPENGL OR GOOPAX_DRAW_WITH_METAL AND NOT GOOPAX_DEBUG AND NOT ANDROID)
+if (NOT GOOPAX_DEBUG AND NOT ANDROID)
   add_sdl_main(nbody glatter goopax_draw)
   if (APPLE AND TARGET nbody)
     SET_SOURCE_FILES_PROPERTIES(nbody.cpp PROPERTIES LANGUAGE OBJCXX)
