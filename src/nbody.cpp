@@ -17,6 +17,7 @@ using std::chrono::steady_clock;
 using namespace Eigen;
 using namespace goopax;
 using namespace std;
+using goopax::detail::PI;
 
 PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 65536); // Number of particles
 PARAMOPT<Tdouble> DT("dt", 5E-3);
@@ -120,7 +121,7 @@ int main(int argc, char** argv)
         N);
 
     float distance = 2;
-    float theta = 0;
+    Vector<float, 2> theta = { 0, 0 };
     Vector<float, 2> last_mouse;
     int mouse_button_down = 0;
     Vector<float, 2> xypos = { 0, 0 };
@@ -158,7 +159,7 @@ int main(int argc, char** argv)
             }
             else if (e->type == SDL_EVENT_MOUSE_WHEEL)
             {
-                distance *= exp(-0.1f * e->wheel.y);
+                distance *= exp(0.1f * e->wheel.y);
             }
         }
         if (mouse_button_down)
@@ -167,7 +168,8 @@ int main(int argc, char** argv)
             SDL_GetMouseState(&mouse[0], &mouse[1]);
             if (mouse_button_down == 1)
             {
-                theta += (mouse[0] - last_mouse[0]) * 0.01f;
+                theta += (mouse - last_mouse) * 0.002f;
+                theta[1] = clamp(theta[1], static_cast<float>(-PI / 2), static_cast<float>(PI / 2));
             }
             else if (mouse_button_down == 3)
             {
@@ -195,11 +197,14 @@ int main(int argc, char** argv)
             frametime = now;
 
 #if WITH_VULKAN
-            stringstream ss;
-            ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
+            if (Renderer.pipelineText)
+            {
+                stringstream ss;
+                ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
 
-            auto size = window->get_size();
-            Renderer.updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
+                auto size = window->get_size();
+                Renderer.pipelineText->updateText(ss.str(), { size[0] - 1000, size[1] - 600 });
+            }
 #else
             window->set_title("nbody. N=" + to_string(N) + ", fps=" + to_string(rate));
 #endif
