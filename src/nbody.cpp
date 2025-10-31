@@ -3,10 +3,13 @@
    Simple N-body example program
  */
 
-#include "common/particle.hpp"
 #include <SDL3/SDL_main.h>
 #include <chrono>
+#include <goopax_draw/particle.hpp>
 #include <goopax_draw/window_sdl.h>
+#if WITH_VULKAN
+#include <goopax_draw/window_vulkan.h>
+#endif
 #include <goopax_extra/param.hpp>
 #include <random>
 
@@ -68,18 +71,36 @@ int main(int argc, char** argv)
 
     unique_ptr<sdl_window> window = sdl_window::create("nbody",
                                                        { 1024, 768 },
-                                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
-                                                       static_cast<goopax::envmode>(env_ALL & ~env_VULKAN));
+                                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
+#if GOOPAX_VERSION_ID < 50802
+                                                       ,
+                                                       static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
+#endif
+    );
     goopax_device device = window->device;
 
 #if WITH_METAL
+    buffer<Vector3<float>> x(device, N);
+    buffer<Vector3<float>> x2(device, N);
     particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
-    buffer<Vector3<float>> x(device, N);  // OpenGL buffer
-    buffer<Vector3<float>> x2(device, N); // OpenGL buffer
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+
+    backend_create_params params = {
+        .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
+                                  | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
+    };
+
+    buffer<Vector<float, 3>> x(window->device, N, params);
+    buffer<Vector<float, 3>> x2(window->device, N, params);
+
+    goopax_draw::vulkan::Renderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window), 1, { 1000, 500 });
 #else
-    opengl_buffer<Vector3<float>> x(device, N);  // OpenGL buffer
-    opengl_buffer<Vector3<float>> x2(device, N); // OpenGL buffer
+    opengl_buffer<Vector3<float>> x(device, N);
+    opengl_buffer<Vector3<float>> x2(device, N);
 #endif
+
+    buffer<Vector3<float>> v(device, N);
+    init(x, v);
 
     kernel CalculateForce(
         device,
@@ -98,8 +119,11 @@ int main(int argc, char** argv)
         0,
         N);
 
-    buffer<Vector3<float>> v(device, N); // and the velocities.
-    init(x, v);
+    float distance = 2;
+    float theta = 0;
+    Vector<float, 2> last_mouse;
+    int mouse_button_down = 0;
+    Vector<float, 2> xypos = { 0, 0 };
 
     bool quit = false;
     while (!quit)
@@ -122,6 +146,34 @@ int main(int argc, char** argv)
                         break;
                 };
             }
+            else if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+            {
+                SDL_GetMouseState(&last_mouse[0], &last_mouse[1]);
+                mouse_button_down = e->button.button;
+                cout << "button: " << (int)e->button.button << endl;
+            }
+            else if (e->type == SDL_EVENT_MOUSE_BUTTON_UP)
+            {
+                mouse_button_down = 0;
+            }
+            else if (e->type == SDL_EVENT_MOUSE_WHEEL)
+            {
+                distance *= exp(-0.1f * e->wheel.y);
+            }
+        }
+        if (mouse_button_down)
+        {
+            Vector<float, 2> mouse;
+            SDL_GetMouseState(&mouse[0], &mouse[1]);
+            if (mouse_button_down == 1)
+            {
+                theta += (mouse[0] - last_mouse[0]) * 0.01f;
+            }
+            else if (mouse_button_down == 3)
+            {
+                xypos -= Vector<float, 2>{ mouse[0] - last_mouse[0], mouse[1] - last_mouse[1] } * 0.004f;
+            }
+            last_mouse = mouse;
         }
 
         static auto frametime = steady_clock::now();
@@ -141,10 +193,22 @@ int main(int argc, char** argv)
             SDL_SetWindowTitle(window->window, s.c_str());
             framecount = 0;
             frametime = now;
+
+#if WITH_VULKAN
+            stringstream ss;
+            ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
+
+            auto size = window->get_size();
+            Renderer.updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
+#else
+            window->set_title("nbody. N=" + to_string(N) + ", fps=" + to_string(rate));
+#endif
         }
 
 #if WITH_METAL
         Renderer.render(x);
+#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+        Renderer.render(x, distance, theta, xypos);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);

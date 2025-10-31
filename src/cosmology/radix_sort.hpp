@@ -1,31 +1,86 @@
+#include <goopax_extra/struct_types.hpp>
+
 template<class A, class B, class S>
 S& operator<<(S& s, const pair<A, B>& p)
 {
     return s << "<" << p.first << "|" << p.second << ">;";
 }
 
-GOOPAX_PREPARE_STRUCT(std::pair)
-
 #define GOOPAX_PREPARE_STRUCT2(NAME, X) \
     using goopax_struct_type = X;       \
     template<typename XX>               \
     using goopax_struct_changetype = NAME<typename goopax_struct_changetype<X, XX>::type>;
 
-template<class key_t>
+namespace heapsort
+{
+template<typename RES, typename CMP>
+void siftdown(RES& a, const gpu_uint start, const gpu_uint end, CMP cmp)
+{
+    gpu_uint root = start;
+    gpu_while(root * 2 + 1 <= end)
+    {
+        gpu_uint child = root * 2 + 1;
+        gpu_uint swap = root;
+        swap = cond(cmp(a[swap], a[child]), child, swap);
+        swap = cond(cmp(a[swap], a[cond(child + 1 <= end, child + 1, swap)]), child + 1, swap);
+
+        gpu_if(swap == root)
+        {
+            gpu_break();
+        }
+        std::swap(a[root], a[swap]);
+        root = swap;
+    }
+}
+
+template<typename FUNC, typename CMP>
+void heapify(FUNC& a, const gpu_uint count, CMP cmp)
+{
+    gpu_for<std::greater_equal<>>((count - 2) / 2, 0, -1, [&](gpu_int start) { siftdown(a, start, count - 1, cmp); });
+}
+
+template<typename RES, typename CMP = std::less<>>
+void heapsort(RES& a, const gpu_uint count, CMP cmp = std::less<>())
+{
+    heapify(a, count, cmp);
+    gpu_for<std::greater<>>(count - 1, 0, -1, [&](gpu_int end) {
+        std::swap(a[end], a[0]);
+        siftdown(a, 0, end - 1, cmp);
+    });
+}
+
+template<typename T, typename CMP = std::less<>>
+void sort_tiny(gpu_type<T*> data, gpu_uint size, unsigned int max_size, CMP cmp = std::less<>())
+{
+    private_mem<T> tmp(max_size);
+
+    gpu_for(0, size, [&](gpu_uint k) { tmp[k] = data[k]; });
+    heapsort(tmp, size, cmp);
+    gpu_for(0, size, [&](gpu_uint k) { data[k] = tmp[k]; });
+}
+
+}
+
+template<typename T, typename key_t>
 struct radix_sort
 {
+    using gpu_T = typename make_gpu<T>::type;
+    using gpu_key_t = typename make_gpu<key_t>::type;
+
+    std::function<gpu_bool(gpu_T, gpu_T)> cmp;
+    std::function<gpu_key_t(T)> get_key;
     const Tuint ls_use;
     const Tuint gs_use;
     const Tuint ng_use = gs_use / ls_use;
-    buffer<pair<CTuint, CTuint>> ranges;
-    buffer<CTuint> local_offsets;
-    buffer<CTuint> group_offsets;
-    buffer<CTuint> key_offsets;
+    buffer<pair<Tuint, Tuint>> ranges;
+    buffer<Tuint> local_offsets;
+    buffer<Tuint> group_offsets;
+    buffer<Tuint> key_offsets;
 
     Tuint bigrange_bits;
     Tuint smallrange_bits;
 
-    template<class X = CTuint>
+    template<class X = Tuint>
     struct smallrange_info
     {
         GOOPAX_PREPARE_STRUCT2(smallrange_info, X)
@@ -55,92 +110,41 @@ struct radix_sort
     };
     buffer<smallrange_info<>> smallrange;
 
-    kernel<void(const buffer<pair<key_t, CTuint>>& src,
-                const buffer<pair<CTuint, CTuint>>& ranges,
+    kernel<void(const buffer<T>& src,
+                const buffer<pair<Tuint, Tuint>>& ranges,
                 const Tuint num_ranges,
                 const Tuint shift,
-                buffer<CTuint>& local_offset,
-                buffer<CTuint>& group_count)>
+                buffer<Tuint>& local_offset,
+                buffer<Tuint>& group_count)>
         radix_sort_func1;
 
-    kernel<void(buffer<CTuint>& group_count, buffer<CTuint>& key_count, Tuint num_ranges)> radix_addfunc1;
+    kernel<void(buffer<Tuint>& group_count, buffer<Tuint>& key_count, Tuint num_ranges)> radix_addfunc1;
 
-    kernel<void(buffer<CTuint>& key_offsets, const buffer<pair<CTuint, CTuint>>& ranges, Tuint num_ranges)>
-        radix_addfunc2;
+    kernel<void(buffer<Tuint>& key_offsets, const buffer<pair<Tuint, Tuint>>& ranges, Tuint num_ranges)> radix_addfunc2;
 
-    kernel<void(const buffer<pair<key_t, CTuint>>& src,
-                const buffer<pair<CTuint, CTuint>>& ranges,
+    kernel<void(const buffer<T>& src,
+                const buffer<pair<Tuint, Tuint>>& ranges,
                 const Tuint num_ranges,
-                const buffer<CTuint>& local_offsets,
-                const buffer<CTuint>& group_offsets,
-                const buffer<CTuint>& key_offsets,
+                const buffer<Tuint>& local_offsets,
+                const buffer<Tuint>& group_offsets,
+                const buffer<Tuint>& key_offsets,
                 const Tuint shift,
-                buffer<pair<key_t, CTuint>>& dest)>
+                buffer<T>& dest)>
         radix_writefunc;
 
-    template<typename RES>
-    static void siftdown(RES& a, const gpu_uint start, const gpu_uint end)
-    {
-        gpu_uint root = start;
-        gpu_while(root * 2 + 1 <= end)
-        {
-            gpu_uint child = root * 2 + 1;
-            gpu_uint swap = root;
-            swap = cond(a[swap].first < a[child].first, child, swap);
-            swap = cond(a[swap].first < a[cond(child + 1 <= end, child + 1, swap)].first, child + 1, swap);
-
-            gpu_if(swap == root)
-            {
-                gpu_break();
-            }
-            std::swap(a[root], a[swap]);
-            root = swap;
-        }
-    }
-
-    template<typename FUNC>
-    static void heapify(FUNC& a, const gpu_uint count)
-    {
-        gpu_for<std::greater_equal<>>((count - 2) / 2, 0, -1, [&](gpu_int start) { siftdown(a, start, count - 1); });
-    }
-
-    template<typename RES>
-    static void heapsort(RES& a, const gpu_uint count)
-    {
-        heapify(a, count);
-        gpu_for<std::greater<>>(count - 1, 0, -1, [&](gpu_int end) {
-            std::swap(a[end], a[0]);
-            siftdown(a, 0, end - 1);
-        });
-    }
-
-    template<typename T>
-    static void sort_tiny(resource<T>& data, unsigned int max_size, const smallrange_info<gpu_uint> range)
-    {
-        private_mem<T> tmp(max_size);
-
-        gpu_for(range.begin, range.end, [&](gpu_uint k) { tmp[k - range.begin] = data[k]; });
-        heapsort(tmp, range.end - range.begin);
-        gpu_for(range.begin, range.end, [&](gpu_uint k) { data[k] = tmp[k - range.begin]; });
-    }
-
-    kernel<void(buffer<pair<key_t, CTuint>>& src,
-                buffer<pair<key_t, CTuint>>& tmp,
-                buffer<smallrange_info<>>& smallrange,
-                const Tuint smallrange_size,
-                const Tuint smallrange_maxsize)>
+    kernel<void(buffer<T>& src, buffer<T>& tmp, buffer<smallrange_info<>>& smallrange, const Tuint smallrange_size)>
         smallsortfunc;
 
 #ifndef NDEBUG
-    kernel<void(const buffer<pair<key_t, CTuint>>& p, Tuint size)> testsortfunc;
+    kernel<void(const buffer<T>& p, Tuint size)> testsortfunc;
 #endif
 
-    void operator()(buffer<pair<key_t, CTuint>>& plist1, buffer<pair<key_t, CTuint>>& plist2, const Tuint max_depthbits)
+    void operator()(buffer<T>& plist1, buffer<T>& plist2, const Tuint max_depthbits)
     {
         goopax_device device = plist1.get_device();
         const unsigned int bits = bigrange_bits;
 
-        vector<pair<CTuint, CTuint>> bigrangevec;
+        vector<pair<Tuint, Tuint>> bigrangevec;
         bigrangevec.reserve(this->ranges.size());
         bigrangevec.assign({ { 0, plist1.size() } });
 
@@ -163,14 +167,14 @@ struct radix_sort
             if (ranges.size() < bigrangevec.size())
             {
                 Tsize_t newsize = bigrangevec.size() * 1.1;
-                cout1 << "Increasing bigrange size to " << newsize << endl;
+                // cout1 << "Increasing bigrange size to " << newsize << endl;
                 ranges.assign(device, newsize);
                 local_offsets.assign(device, newsize * (1 << bits) * gs_use);
                 group_offsets.assign(device, newsize * (1 << bits) * ng_use);
                 key_offsets.assign(device, newsize * (1 << bits));
             }
             {
-                buffer_map<pair<CTuint, CTuint>> ranges(this->ranges);
+                buffer_map<pair<Tuint, Tuint>> ranges(this->ranges);
                 for (Tsize_t k = 0; k < bigrangevec.size(); ++k)
                 {
                     ranges[k] = bigrangevec[k];
@@ -219,7 +223,7 @@ struct radix_sort
             radix_writefunc(
                 plist1, ranges, old_bigrangevecsize, local_offsets, group_offsets, key_offsets, shift, plist2);
 
-            cout1 << "Swapping" << endl;
+            // cout1 << "Swapping" << endl;
             swap(plist1, plist2);
         }
 
@@ -245,7 +249,7 @@ struct radix_sort
             buffer_map smallrange(this->smallrange);
             std::copy(smallrangevec.begin(), smallrangevec.end(), smallrange.begin());
         }
-        smallsortfunc(plist1, plist2, smallrange, smallrangevec.size(), smallrange.size());
+        smallsortfunc(plist1, plist2, smallrange, smallrangevec.size());
 
         //    cout1 << "plist1=" << plist1 << endl;
 #if WITH_TIMINGS
@@ -263,8 +267,9 @@ struct radix_sort
 #endif
     }
 
-    radix_sort(goopax_device device)
-        : ls_use(device.default_local_size())
+    radix_sort(goopax_device device, std::function<gpu_bool(gpu_T, gpu_T)> cmp0)
+        : cmp(cmp0)
+        , ls_use(device.default_local_size())
         , gs_use(device.default_global_size_min())
         , ranges(device, 0)
         , local_offsets(device, 0)
@@ -275,32 +280,32 @@ struct radix_sort
         unsigned int num_registers = device.max_registers();
         if (num_registers == 0)
             num_registers = 128;
-        cout << "num_registers=" << num_registers << endl;
-        cout << "sizeof(pair<key_t, CTuint>)=" << sizeof(pair<key_t, CTuint>) << endl;
+        // cout << "num_registers=" << num_registers << endl;
+        // cout << "sizeof(T)=" << sizeof(T) << endl;
 
         {
             Tuint max_bits = 2;
-            while ((1 << (max_bits + 1)) * sizeof(pair<key_t, CTuint>) / sizeof(float) < num_registers * 0.7)
+            while ((1 << (max_bits + 1)) * sizeof(T) / sizeof(float) < num_registers * 0.7)
             {
                 ++max_bits;
             }
 
             ++max_bits;
-            cout << "Using max_bits=" << max_bits << endl;
+            // cout << "Using max_bits=" << max_bits << endl;
             smallrange_bits = max_bits;
             bigrange_bits = max_bits;
         }
 
         radix_sort_func1.assign(
             device,
-            [this](const resource<pair<key_t, CTuint>>& src,
-                   const resource<pair<CTuint, CTuint>>& ranges,
+            [this](const resource<T>& src,
+                   const resource<pair<Tuint, Tuint>>& ranges,
                    const gpu_uint num_ranges,
                    const gpu_uint shift,
-                   resource<CTuint>& local_offset,
-                   resource<CTuint>& group_count) {
+                   resource<Tuint>& local_offset,
+                   resource<Tuint>& group_count) {
                 gpu_for(0, num_ranges, [&](gpu_uint r) {
-                    private_mem<CTuint> localcount(1 << bigrange_bits);
+                    private_mem<Tuint> localcount(1 << bigrange_bits);
                     for (Tuint k = 0; k < (1u << bigrange_bits); ++k)
                     {
                         localcount[k] = 0;
@@ -331,7 +336,7 @@ struct radix_sort
 
         radix_addfunc1.assign(
             device,
-            [this](resource<CTuint>& group_count, resource<CTuint>& key_count, gpu_uint num_ranges) {
+            [this](resource<Tuint>& group_count, resource<Tuint>& key_count, gpu_uint num_ranges) {
                 gpu_for_group(0, (1 << bigrange_bits) * num_ranges, [&](gpu_uint keyrange) {
                     gpu_uint key = keyrange % (1 << bigrange_bits);
                     gpu_uint r = keyrange / (1 << bigrange_bits);
@@ -362,7 +367,7 @@ struct radix_sort
 
         radix_addfunc2.assign(
             device,
-            [this](resource<CTuint>& key_offsets, const resource<pair<CTuint, CTuint>>& ranges, gpu_uint num_ranges) {
+            [this](resource<Tuint>& key_offsets, const resource<pair<Tuint, Tuint>>& ranges, gpu_uint num_ranges) {
                 gpu_for_global(0, num_ranges, [&](gpu_uint r) {
                     gpu_uint sum = ranges[r].first;
                     gpu_for(0, (1 << bigrange_bits), [&](gpu_uint key) {
@@ -376,16 +381,16 @@ struct radix_sort
 
         radix_writefunc.assign(
             device,
-            [this](const resource<pair<key_t, CTuint>>& src,
-                   const resource<pair<CTuint, CTuint>>& ranges,
+            [this](const resource<T>& src,
+                   const resource<pair<Tuint, Tuint>>& ranges,
                    const gpu_uint num_ranges,
-                   const resource<CTuint>& local_offsets,
-                   const resource<CTuint>& group_offsets,
-                   const resource<CTuint>& key_offsets,
+                   const resource<Tuint>& local_offsets,
+                   const resource<Tuint>& group_offsets,
+                   const resource<Tuint>& key_offsets,
                    const gpu_uint shift,
-                   resource<pair<key_t, CTuint>>& dest) {
-                private_mem<CTuint> offsets(1 << bigrange_bits);
-                local_mem<CTuint> thisgroup_offsets(1 << bigrange_bits);
+                   resource<T>& dest) {
+                private_mem<Tuint> offsets(1 << bigrange_bits);
+                local_mem<Tuint> thisgroup_offsets(1 << bigrange_bits);
                 gpu_for(0, num_ranges, [&](gpu_uint r) {
                     gpu_for_local(0, (1 << bigrange_bits), [&](gpu_uint key) {
                         thisgroup_offsets[key] =
@@ -414,11 +419,10 @@ struct radix_sort
 
         smallsortfunc.assign(
             device,
-            [this](resource<pair<key_t, CTuint>>& src,
-                   resource<pair<key_t, CTuint>>& tmp,
+            [this](resource<T>& src,
+                   resource<T>& tmp,
                    resource<smallrange_info<>>& smallrange,
-                   const gpu_uint smallrange_size,
-                   const gpu_uint smallrange_maxsize) {
+                   const gpu_uint smallrange_size) {
                 smallrange_info<gpu_uint> myrange;
 
                 gpu_uint num_tiny = 0;
@@ -440,7 +444,10 @@ struct radix_sort
                             gpu_if(num_tiny == local_size())
                             {
                                 src.barrier();
-                                sort_tiny<pair<key_t, CTuint>>(src, (1 << smallrange_bits), myrange);
+                                heapsort::sort_tiny(src.begin() + myrange.begin,
+                                                    myrange.end - myrange.begin,
+                                                    (1 << smallrange_bits),
+                                                    cmp);
                                 src.barrier();
                                 num_tiny = 0;
                             }
@@ -449,7 +456,7 @@ struct radix_sort
                     gpu_else
                     {
                         local_barrier();
-                        private_mem<CTuint> count(1 << smallrange_bits);
+                        private_mem<Tuint> count(1 << smallrange_bits);
                         const gpu_uint bits = min(32 - countl_zero(range.end - range.begin) + 1, smallrange_bits);
                         gpu_for(0, (1u << bits), [&](gpu_uint key) { count[key] = 0; });
 
@@ -495,14 +502,15 @@ struct radix_sort
                 src.barrier();
                 gpu_if(local_id() < num_tiny)
                 {
-                    sort_tiny<pair<key_t, CTuint>>(src, (1 << smallrange_bits), myrange);
+                    heapsort::sort_tiny(
+                        src.begin() + myrange.begin, myrange.end - myrange.begin, (1 << smallrange_bits), cmp);
                 }
             },
             ls_use,
             gs_use);
 
 #ifndef NDEBUG
-        testsortfunc.assign(device, [](const resource<pair<key_t, CTuint>>& p, gpu_uint size) {
+        testsortfunc.assign(device, [](const resource<T>& p, gpu_uint size) {
             gpu_for_global(0, size - 1, [&](gpu_uint k) { gpu_assert(p[k].first <= p[k + 1].first); });
         });
 #endif

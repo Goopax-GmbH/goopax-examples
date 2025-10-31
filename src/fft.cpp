@@ -69,7 +69,7 @@ struct fftdata
         , tmp2(device, size[0] * size[1])
 
     {
-        for (uint channel = 0; channel < 3; ++channel)
+        for (unsigned int channel = 0; channel < 3; ++channel)
         {
             fft_x[channel].assign(device, [this, channel](const resource<Vector<uint8_t, 3>>& input) {
                 const uint ls = min(local_size(), ((size[0] ^ (size[0] - 1)) + 1) / 2);
@@ -92,10 +92,10 @@ struct fftdata
         }
 
         fft_y.assign(device, [this]() {
-            const uint ls = min(local_size(), ((size[1] ^ (size[1] - 1)) + 1) / 2);
+            const unsigned int ls = min(local_size(), ((size[1] ^ (size[1] - 1)) + 1) / 2);
             gpu_uint lid = global_id() % ls;
             gpu_uint gid = global_id() / ls;
-            const uint ng = global_size() / ls;
+            const unsigned int ng = global_size() / ls;
 
             cout << "fft_y: height=" << size[1] << " = ";
             show_primes(size[1]);
@@ -110,10 +110,10 @@ struct fftdata
             });
         });
         ifft_y.assign(device, [this]() {
-            const uint ls = min(local_size(), ((size[1] ^ (size[1] - 1)) + 1) / 2);
+            const unsigned int ls = min(local_size(), ((size[1] ^ (size[1] - 1)) + 1) / 2);
             gpu_uint lid = global_id() % ls;
             gpu_uint gid = global_id() / ls;
-            const uint ng = global_size() / ls;
+            const unsigned int ng = global_size() / ls;
             gpu_for(gid, size[0], ng, [&](gpu_uint x) {
                 ifft_workgroup<gpu_float>(
                     [&](gpu_uint y) { return this->tmp2[y * size[0] + x]; },
@@ -123,13 +123,13 @@ struct fftdata
             });
         });
 
-        for (uint channel = 0; channel < 3; ++channel)
+        for (unsigned int channel = 0; channel < 3; ++channel)
         {
             ifft_x[channel].assign(device, [this, channel](image_resource<2, Vector<Tuint8_t, 4>, true>& frame) {
-                const uint ls = min(local_size(), ((size[0] ^ (size[0] - 1)) + 1) / 2);
+                const unsigned int ls = min(local_size(), ((size[0] ^ (size[0] - 1)) + 1) / 2);
                 gpu_uint lid = global_id() % ls;
                 gpu_uint gid = global_id() / ls;
-                const uint ng = global_size() / ls;
+                const unsigned int ng = global_size() / ls;
 
                 gpu_for(gid, size[1], ng, [&](gpu_uint y) {
                     ifft_workgroup<gpu_float>([&](gpu_uint x) { return this->tmp1[y * size[0] + x]; },

@@ -12,7 +12,7 @@
 using namespace goopax;
 using namespace std;
 using Eigen::Vector;
-using goopax::interface::PI;
+using goopax::detail::PI;
 using std::chrono::duration;
 using std::chrono::steady_clock;
 

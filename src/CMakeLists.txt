@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15...4.1)
 
-project(goopax_examples LANGUAGES CXX)
+project(goopax_examples LANGUAGES C CXX)
 
 if (CMAKE_VERSION VERSION_LESS "3.20")
   set (CMAKE_CXX_STANDARD 20)
@@ -8,7 +8,7 @@ else()
   set (CMAKE_CXX_STANDARD 23)
 endif()
 
-# Disabling cuda examples by default because of compatibility issues between cuda and gcc>=13
+# Disabling cuda examples by default because of compatibility issues between cuda and recent gcc versions
 option(WITH_CUDA "WITH_CUDA" OFF)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH on)
@@ -33,7 +33,7 @@ endif()
 find_package(goopax REQUIRED PATHS ../..)
 find_package(TBB)
 find_package(OpenCL)
-find_package(Boost 1.65.0 COMPONENTS multiprecision)
+find_package(Boost 1.65.0 COMPONENTS multiprecision iostreams)
 find_package(SDL3 PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/sdl3")
 find_package(Eigen3 3.3 NO_MODULE PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/eigen")
 
@@ -73,9 +73,8 @@ if (APPLE)
 endif()
 
 if (WITH_CUDA)
-  find_package(CUDA REQUIRED)
   enable_language(CUDA)
-  set (CMAKE_CUDA_STANDARD 17)
+  set (CMAKE_CUDA_STANDARD 20)
 endif()
 
 add_subdirectory(common/draw)
@@ -152,20 +151,10 @@ macro(add_sdl_main)
 endmacro()
 
 
-if (GOOPAX_DRAW_WITH_OPENGL OR GOOPAX_DRAW_WITH_METAL AND NOT GOOPAX_DEBUG AND NOT ANDROID)
+if (NOT GOOPAX_DEBUG AND NOT ANDROID)
   add_sdl_main(nbody glatter goopax_draw)
   if (APPLE AND TARGET nbody)
     SET_SOURCE_FILES_PROPERTIES(nbody.cpp PROPERTIES LANGUAGE OBJCXX)
-  endif()
-endif()
-
-add_sdl_main(cosmology glatter goopax_draw)
-if (TARGET cosmology)
-  if (TARGET opencv)
-    target_link_libraries(cosmology opencv)
-  endif()
-  if (APPLE)
-    SET_SOURCE_FILES_PROPERTIES(cosmology.cpp PROPERTIES LANGUAGE OBJCXX)
   endif()
 endif()
 
@@ -188,6 +177,7 @@ add(helloworld)
 add(matmul Eigen3::Eigen goopax_typedefs)
 add(cl-interop-1 OpenCL::OpenCL)
 add(cl-interop-2 OpenCL::OpenCL)
+add_subdirectory(cosmology)
 
 if (TARGET mandelbrot)
   target_compile_definitions(mandelbrot PUBLIC -DGOOPAX_ALLOW_DEPRECATED_DEVICES=1)

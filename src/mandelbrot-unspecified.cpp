@@ -20,7 +20,7 @@
 using namespace goopax;
 using namespace std;
 using Eigen::Vector;
-using goopax::interface::PI;
+using goopax::detail::PI;
 using std::chrono::steady_clock;
 
 template<class D, typename window_size_t = unsigned int>
