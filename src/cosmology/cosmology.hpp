@@ -36,7 +36,7 @@ using namespace std;
 using chrono::duration;
 using chrono::steady_clock;
 using chrono::time_point;
-using goopax::interface::PI;
+using goopax::detail::PI;
 
 template<typename T>
 constexpr T intceil(const T a, T mod)
