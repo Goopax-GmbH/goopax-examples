@@ -151,7 +151,7 @@ macro(add_sdl_main)
 endmacro()
 
 
-if (NOT GOOPAX_DEBUG AND NOT ANDROID)
+if (NOT GOOPAX_DEBUG)
   add_sdl_main(nbody glatter goopax_draw)
   if (APPLE AND TARGET nbody)
     SET_SOURCE_FILES_PROPERTIES(nbody.cpp PROPERTIES LANGUAGE OBJCXX)

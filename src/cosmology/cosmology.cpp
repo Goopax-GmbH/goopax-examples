@@ -660,8 +660,8 @@ int main(int argc, char** argv)
             else if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
             {
                 backend_create_params params = {
-                    .vulkan = { .usage_bits = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT
-                                              | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
+                    .vulkan = { .usage_bits = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                                              | VK_BUFFER_USAGE_TRANSFER_DST_BIT
                                               | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
                 };
                 if (device.get_envmode() == env_CUDA)
