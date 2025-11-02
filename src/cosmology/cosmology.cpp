@@ -33,12 +33,12 @@ PARAMOPT<double> TREE_FACTOR("tree_factor", 0.8);
 PARAMOPT<double> FORCE_TREE_FACTOR("force_tree_factor", 0.3);
 PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
 PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 400);
-PARAMOPT<Tdouble> DT("dt", 5E-3);
+PARAMOPT<Tdouble> DT("dt", 1E-3);
 
 template<class T>
-Vector<T, 4> color(T pot)
+Vector<T, 4> color(T val) // 0 <= val < 1
 {
-    T pc = log2(clamp((-pot - 0.0f) * 0.6f, 1, 15.99f));
+    T pc = val * 4;
 
     gpu_float slot = floor(pc);
     gpu_float x = pc - slot;
@@ -403,7 +403,7 @@ void generate_IC(vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass,
     std::uniform_real_distribution<double> distribution2;
 
     ranges::fill(v, zero);
-    cv::Mat image_color = cv::imread(filename);
+    cv::Mat image_color = cv::imread(filename.string());
     if (image_color.empty())
     {
         throw std::runtime_error("Failed to read image");
@@ -584,6 +584,10 @@ int main(int argc, char** argv)
         Cosmos<T, MULTIPOLE_ORDER> cosmos(
             device, NUM_PARTICLES(), tree_size, min_force_tree_size, MAX_DISTFAC(), MAX_NODESIZE());
 
+        float distance = 2;
+        Vector<float, 2> theta = { 0, 0 };
+        Vector<float, 2> xypos = { 0, 0 };
+
         bool quit = false;
         for (Tuint demo_run = 0; !quit; ++demo_run)
         {
@@ -738,6 +742,14 @@ int main(int argc, char** argv)
                                           (*x_gl)[k][2] = -potential[k] * 0.01f;
                                       });
                                   });
+                initData.x.assign(device, num_particles);
+                initData.v.assign(device, num_particles);
+                initData.force.assign(device, num_particles);
+                initData.potential.assign(device, num_particles);
+#if !CONSTANT_MASS
+                initData.mass.assign(device, num_particles);
+#endif
+                initData.tmps.assign(device, num_particles);
             }
 #endif
             else
@@ -832,11 +844,8 @@ int main(int argc, char** argv)
             auto last_fps_time = steady_clock::now();
             size_t last_fps_step = 0;
 
-            float distance = 2;
-            float theta = 0;
             Vector<float, 2> last_mouse;
             int mouse_button_down = 0;
-            Vector<float, 2> xypos = { 0, 0 };
 
             constexpr unsigned int make_tree_every = 2;
             constexpr unsigned int render_every = 1;
@@ -851,7 +860,7 @@ int main(int argc, char** argv)
 
             for (size_t step = 0; !quit; ++step)
             {
-                if (step == 500)
+                if (cosmic.is_cosmic ? (cosmic.a > 1) : (step == 2000))
                 {
                     break;
                 }
@@ -887,7 +896,7 @@ int main(int argc, char** argv)
                     }
                     else if (e->type == SDL_EVENT_MOUSE_WHEEL)
                     {
-                        distance *= exp(-0.1f * e->wheel.y);
+                        distance *= exp(0.1f * e->wheel.y);
                     }
                 }
                 if (mouse_button_down)
@@ -896,7 +905,8 @@ int main(int argc, char** argv)
                     SDL_GetMouseState(&mouse[0], &mouse[1]);
                     if (mouse_button_down == 1)
                     {
-                        theta += (mouse[0] - last_mouse[0]) * 0.01f;
+                        theta += (mouse - last_mouse) * 0.002f;
+                        theta[1] = clamp(theta[1], static_cast<float>(-PI / 2), static_cast<float>(PI / 2));
                     }
                     else if (mouse_button_down == 3)
                     {
@@ -990,28 +1000,31 @@ int main(int argc, char** argv)
 #if WITH_VULKAN
                     else if (vulkanRenderer.get())
                     {
-                        stringstream ss;
-
-                        ss << "N-Body Simulation (FMM)" << endl
-                           << "device: " << device.name() << endl
-                           << "number of particles: " << cosmos.x.size() << endl
-                           << "step: " << step << endl
-                           << "steps per second: " << rate << endl;
-
-                        if (cosmic.is_cosmic)
+                        if (vulkanRenderer->pipelineText)
                         {
-                            double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+                            stringstream ss;
 
-                            ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
-                               << " ("
-                               << static_cast<ssize_t>(std::abs(caltime + (caltime >= 0 ? 1.0 : 0.0) * yr_) / yr_)
-                               << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
-                               << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
-                               << endl;
+                            ss << "N-Body Simulation (FMM)" << endl
+                               << "device: " << device.name() << endl
+                               << "number of particles: " << cosmos.x.size() << endl
+                               << "step: " << step << endl
+                               << "steps per second: " << rate << endl;
+
+                            if (cosmic.is_cosmic)
+                            {
+                                double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+
+                                ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
+                                   << " ("
+                                   << static_cast<ssize_t>(std::abs(caltime + (caltime >= 0 ? 1.0 : 0.0) * yr_) / yr_)
+                                   << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
+                                   << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
+                                   << endl;
+                            }
+
+                            auto size = window->get_size();
+                            vulkanRenderer->pipelineText->updateText(ss.str(), { size[0] - 1100, size[1] - 600 });
                         }
-
-                        auto size = window->get_size();
-                        vulkanRenderer->updateText(ss.str(), { size[0] - 1000, size[1] - 600 }, { 600, 500 }, 55);
                     }
 #endif
                     else

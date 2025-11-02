@@ -2652,7 +2652,7 @@ struct Cosmos : public CosmosData<T>
             });
         }));
 
-        cout << "Waiting for kernel creations" << endl;
+        cout << "Waiting for kernels to be created. This may take a few minutes." << endl;
 
         while (!futures.empty())
         {
