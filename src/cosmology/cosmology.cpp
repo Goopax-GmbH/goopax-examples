@@ -2,6 +2,7 @@
 #include "cube.hpp"
 #include "multipole_cart.hpp"
 #include <filesystem>
+#include <goopax_extra/random.hpp>
 #if WITH_HDF5
 #include <hdf5.h>
 #endif
@@ -164,37 +165,29 @@ struct CosmicData
 };
 
 #if WITH_HDF5
-void read_music2_hdf5(CosmicData& cosmic,
-                      const std::string& filename,
-                      std::vector<Vector<Tfloat, 3>>& positions,
-                      std::vector<Vector<Tfloat, 3>>& velocities,
-                      Tfloat& mass,
-                      int part_type = 1)
+struct hdf5_reader
 {
-    // constexpr float boxlength = 100*1000;
-    cosmic.is_cosmic = true;
+    hid_t file_id = 0;
+    hid_t header_id = 0;
+    array<uint32_t, 6> npart;
 
-    positions.clear();
-    velocities.clear();
-
-    hid_t file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (file_id < 0)
-        return; // Error opening file
-
-    // Open Header group and read NumPart_ThisFile
-    hid_t header_id = H5Gopen(file_id, "/Header", H5P_DEFAULT);
-    if (header_id < 0)
+    template<typename T>
+    T read(const char* name)
     {
-        H5Fclose(file_id);
-        return;
-    }
-
-    auto read_double_attr = [&](const char* name) -> double {
-        double value = 0.0;
+        T value = 0;
         hid_t attr_id = H5Aopen(header_id, name, H5P_DEFAULT);
         if (attr_id >= 0)
         {
-            H5Aread(attr_id, H5T_NATIVE_DOUBLE, &value);
+            hid_t type;
+            if constexpr (is_same_v<T, double>)
+            {
+                type = H5T_NATIVE_DOUBLE;
+            }
+            else
+            {
+                static_assert(false);
+            }
+            H5Aread(attr_id, type, &value);
             H5Aclose(attr_id);
         }
         else
@@ -202,14 +195,76 @@ void read_music2_hdf5(CosmicData& cosmic,
             std::cerr << "Warning: Attribute " << name << " not found" << std::endl;
         }
         return value;
-    };
+    }
 
-    double hubble_param = read_double_attr("HubbleParam");
+    hdf5_reader(const std::string& filename)
+    {
+        try
+        {
+            file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+            if (file_id < 0)
+            {
+                throw std::runtime_error("failed to open hdf5 file.");
+            }
+            header_id = H5Gopen(file_id, "/Header", H5P_DEFAULT);
+            if (header_id < 0)
+            {
+                throw std::runtime_error("failed to locate hdf5 header.");
+            }
+            hid_t attr_id = H5Aopen(header_id, "NumPart_ThisFile", H5P_DEFAULT);
+            if (attr_id < 0)
+            {
+                throw std::runtime_error("cannot read number of particles");
+            }
+            hid_t space_id = H5Aget_space(attr_id);
+            H5Aread(attr_id, H5T_NATIVE_UINT32, npart.data());
+            H5Sclose(space_id);
+            H5Aclose(attr_id);
+
+            cout << "reader: file_id=" << file_id << ", header_id=" << header_id << ", npart=" << npart << endl;
+        }
+        catch (...)
+        {
+            destroy();
+            throw;
+        }
+    }
+    void destroy()
+    {
+        if (header_id != 0)
+        {
+            H5Gclose(header_id);
+            header_id = 0;
+        }
+        if (file_id != 0)
+        {
+            H5Fclose(file_id);
+            file_id = 0;
+        }
+    }
+    ~hdf5_reader()
+    {
+        destroy();
+    }
+};
+
+void read_music2_hdf5(CosmicData& cosmic,
+                      const std::string& filename,
+                      std::span<Vector<Tfloat, 3>> positions,
+                      std::span<Vector<Tfloat, 3>> velocities,
+                      Tfloat& mass,
+                      int part_type = 1)
+{
+    hdf5_reader reader(filename);
+
+    cosmic.is_cosmic = true;
+
+    double hubble_param = reader.read<double>("HubbleParam");
     cosmic.H0 = hubble_param * 100.0 * km_ / s_ / Mpc_; // in km/s/Mpc
-    cosmic.omega_m = read_double_attr("Omega0");
-    cosmic.omega_lambda = read_double_attr("OmegaLambda");
-    double redshift = read_double_attr("Redshift");
-    cosmic.box_size = read_double_attr("BoxSize") * kpc_ / hubble_param / a_;
+    cosmic.omega_m = reader.read<double>("Omega0");
+    cosmic.omega_lambda = reader.read<double>("OmegaLambda");
+    double redshift = reader.read<double>("Redshift");
+    cosmic.box_size = reader.read<double>("BoxSize") * kpc_ / hubble_param / a_;
     cosmic.a = 1.0 / (1 + redshift);
 
     {
@@ -243,58 +298,41 @@ void read_music2_hdf5(CosmicData& cosmic,
     // if (sigma8 != 0.0) std::cout << "Sigma8: " << sigma8 << std::endl;
     cout << "G=" << G_ << endl;
 
-    hid_t attr_id = H5Aopen(header_id, "NumPart_ThisFile", H5P_DEFAULT);
-    if (attr_id < 0)
-    {
-        H5Gclose(header_id);
-        H5Fclose(file_id);
-        return;
-    }
-    hid_t space_id = H5Aget_space(attr_id);
-    uint32_t npart[6];
-    H5Aread(attr_id, H5T_NATIVE_UINT32, npart);
-    H5Sclose(space_id);
-    H5Aclose(attr_id);
-    H5Gclose(header_id);
+    size_t N = reader.npart[part_type];
 
-    size_t N = npart[part_type];
-    if (N == 0)
+    if (positions.size() != N || velocities.size() != N)
     {
-        H5Fclose(file_id);
-        return;
+        throw std::runtime_error("sizes differ");
     }
 
     std::string group_name = "/PartType" + std::to_string(part_type);
-    hid_t group_id = H5Gopen(file_id, group_name.c_str(), H5P_DEFAULT);
+    hid_t group_id = H5Gopen(reader.file_id, group_name.c_str(), H5P_DEFAULT);
     if (group_id < 0)
     {
-        H5Fclose(file_id);
-        return;
+        throw std::runtime_error("Cannot open PartPype entry");
     }
 
     // Read Coordinates
     hid_t dset_pos = H5Dopen(group_id, "Coordinates", H5P_DEFAULT);
     if (dset_pos < 0)
     {
-        H5Gclose(group_id);
-        H5Fclose(file_id);
-        return;
+        throw std::runtime_error("Cannot open coordinates");
     }
     hid_t dtype_pos = H5Dget_type(dset_pos);
     bool is_double = (H5Tget_class(dtype_pos) == H5T_FLOAT && H5Tget_size(dtype_pos) == 8);
     hid_t native_type = is_double ? H5T_NATIVE_DOUBLE : H5T_NATIVE_FLOAT;
 
-    std::vector<float> pos_data(3 * N);
+    // std::vector<float> pos_data(3 * N);
     if (is_double)
     {
+        cout << "DOUBLE" << endl;
         std::vector<double> temp(3 * N);
         H5Dread(dset_pos, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, temp.data());
-        for (size_t i = 0; i < 3 * N; ++i)
-            pos_data[i] = static_cast<float>(temp[i]);
+        ranges::copy(temp, reinterpret_cast<float*>(positions.data()));
     }
     else
     {
-        H5Dread(dset_pos, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, pos_data.data());
+        H5Dread(dset_pos, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, reinterpret_cast<float*>(positions.data()));
     }
     H5Tclose(dtype_pos);
     H5Dclose(dset_pos);
@@ -303,39 +341,24 @@ void read_music2_hdf5(CosmicData& cosmic,
     hid_t dset_vel = H5Dopen(group_id, "Velocities", H5P_DEFAULT);
     if (dset_vel < 0)
     {
-        H5Gclose(group_id);
-        H5Fclose(file_id);
-        return;
+        throw std::runtime_error("Cannot open velocities");
     }
     hid_t dtype_vel = H5Dget_type(dset_vel);
     // Assume same type as positions for simplicity
-    std::vector<float> vel_data(3 * N);
     if (is_double)
     {
         std::vector<double> temp(3 * N);
         H5Dread(dset_vel, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, temp.data());
-        for (size_t i = 0; i < 3 * N; ++i)
-            vel_data[i] = static_cast<float>(temp[i]);
+        ranges::copy(temp, reinterpret_cast<float*>(velocities.data()));
     }
     else
     {
-        H5Dread(dset_vel, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, vel_data.data());
+        H5Dread(dset_vel, native_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, velocities.data());
     }
     H5Tclose(dtype_vel);
     H5Dclose(dset_vel);
 
     H5Gclose(group_id);
-    H5Fclose(file_id);
-
-    // Populate output vectors
-    positions.reserve(N);
-    velocities.reserve(N);
-    for (size_t i = 0; i < N; ++i)
-    {
-        size_t idx = 3 * i;
-        positions.emplace_back(pos_data[idx], pos_data[idx + 1], pos_data[idx + 2]);
-        velocities.emplace_back(vel_data[idx], vel_data[idx + 1], vel_data[idx + 2]);
-    }
 
     /**
        positions have units m_/a_
@@ -360,49 +383,27 @@ void read_music2_hdf5(CosmicData& cosmic,
     mass = cosmic.density * pow3(cosmic.box_size) / N;
 }
 
-template<typename T>
-void generate_IC_HDF5(
-    CosmicData& cosmic, vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass, filesystem::path fn)
+void generate_IC_HDF5(CosmicData& cosmic,
+                      buffer_map<Vector<Tfloat, 3>> x,
+                      buffer_map<Vector<Tfloat, 3>> v,
+                      Tfloat& mass,
+                      filesystem::path fn)
 {
     read_music2_hdf5(cosmic, fn, x, v, mass);
-
-    // cout << "pos.size()=" << pos.size() << endl;
-    // cout << "vel.size()=" << vel.size() << endl;
-    /*
-    if (pos.size() != cosmos.x.size())
-    {
-        cout << "Number of particles does not match. pos.size()=" << pos.size()
-             << ", cosmos.num_particles=" << cosmos.x.size() << endl;
-        exit(0);
-    }
-    */
-
-    /*
-      cosmos.x = std::move(pos);
-    cosmos.v = std::move(vel);
-#if CONSTANT_MASS
-    cosmos.constantMass = mass;
-#else
-    cosmos.mass.fill(mass);
-#endif
-    */
 }
 #endif
 
 #if WITH_OPENCV
-template<typename T>
-void generate_IC(vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass, const fs::path& filename)
+void generate_IC(buffer<Vector<Tfloat, 3>>& x, buffer<Vector<Tfloat, 3>>& v, Tfloat& mass, const fs::path& filename)
 {
     cout << "Reading from file " << filename << endl;
-    size_t N = NUM_PARTICLES();
-    x.resize(N);
-    v.resize(N);
 
-    std::default_random_engine generator;
-    std::normal_distribution<double> distribution;
-    std::uniform_real_distribution<double> distribution2;
+    Tuint N = x.size();
+    cout << "N=" << N << endl;
+    goopax_device device = x.get_device();
 
-    ranges::fill(v, zero);
+    v.fill(zero);
+
     cv::Mat image_color = cv::imread(filename.string());
     if (image_color.empty())
     {
@@ -412,70 +413,78 @@ void generate_IC(vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass,
     cv::Mat image_gray;
     cv::cvtColor(image_color, image_gray, cv::COLOR_BGR2GRAY);
 
-    unsigned int max_extent = max(image_gray.rows, image_gray.cols);
-    Vector<double, 3> cm = { 0, 0, 0 };
-    // buffer_map cx(cosmos.x);
-    for (auto& r : x)
-    {
-        // cout << "." << flush;
-        while (true)
-        {
-            for (auto& xx : r)
+    image_buffer<2, array<uint8_t, 1>, true> image(device,
+                                                   { (unsigned int)image_gray.cols, (unsigned int)image_gray.rows });
+    image.copy_from_host_async(reinterpret_cast<const array<uint8_t, 1>*>(image_gray.data));
+
+    std::random_device rd;
+    WELL512_data rnd(device, device.default_global_size_max(), rd());
+
+    kernel prog(
+        device, [&x, &rnd](const image_resource<2, array<uint8_t, 1>, true>& image) -> gather_add<Vector<Tfloat, 3>> {
+            WELL512_lib rndlib(rnd);
+            Vector<gpu_float, 3> cm = zero;
+
+            gpu_uint k = global_id();
+
+            gpu_while(k < x.size())
             {
-                xx = distribution2(generator);
-            }
-            r[2] *= 0.1f;
-            Vector<int, 3> ri = (r * max_extent).template cast<int>();
-            if (ri[0] < image_gray.cols && ri[1] < image_gray.rows)
-            {
-                uint8_t c = image_gray.at<uint8_t>(
-                    { static_cast<int>(r[0] * max_extent), static_cast<int>(r[1] * max_extent) });
-                if (distribution2(generator) * 255 < c)
+                array<gpu_uint, 16> d = rndlib.generate();
+                Vector<gpu_float, 3> r = { d[0], d[1], d[2] };
+                r *= static_cast<gpu_float>(max(image.width(), image.height())) * (1.f / numeric_limits<Tuint>::max());
+                r[2] *= 0.1f;
+                gpu_float c = image.read(r.head<2>().eval(), address_clamp | filter_linear)[0];
+                gpu_if(d[3] < c * numeric_limits<gpu_uint>::max())
                 {
-                    cm += r.template cast<double>();
-                    break;
+                    x[k] = r;
+                    k += global_size();
+                    cm += r;
                 }
             }
+            return cm;
+        });
+
+    Vector<Tfloat, 3> cm = prog(image).get() / N;
+    {
+        buffer_map xx(x);
+
+        for (auto& r : xx)
+        {
+            r -= cm;
+        }
+        double extent2 = 0;
+        for (auto& r : xx)
+        {
+            extent2 += r.squaredNorm();
+        }
+        extent2 /= N;
+        for (auto& r : xx)
+        {
+            r *= 0.5 / sqrt(extent2);
+            r[1] *= -1;
         }
     }
-    cm /= N;
-    for (auto& r : x)
-    {
-        r -= cm.cast<Tfloat>();
-    }
-    double extent2 = 0;
-    for (auto& r : x)
-    {
-        extent2 += r.squaredNorm();
-    }
-    extent2 /= N;
-    for (auto& r : x)
-    {
-        r *= 0.5 / sqrt(extent2);
-        r[1] *= -1;
-    }
     mass = 1.0 / N;
+
+    cout << "N=" << N << ", cm=" << cm << endl;
 }
 #endif
 
-template<typename T>
-void generate_IC(vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass)
+void generate_IC(buffer_map<Vector<Tfloat, 3>> x, buffer_map<Vector<Tfloat, 3>> v, Tfloat& mass)
 {
     cout << "creating initial conditions" << endl;
-    size_t N = NUM_PARTICLES();
-    x.resize(N);
-    v.resize(N);
 
     std::default_random_engine generator;
     std::normal_distribution<double> distribution;
     std::uniform_real_distribution<double> distribution2;
     Tint MODE = 2;
+    Tuint N = x.size();
     if (MODE == 2)
     {
         for (Tuint k = 0; k < N; ++k) // Setting the initial conditions:
         {                             // N particles of mass 1/N each are randomly placed in a sphere of radius 1
-            Vector<T, 3> xk;
-            Vector<T, 3> vk;
+            Vector<Tfloat, 3> xk;
+            Vector<Tfloat, 3> vk;
             do
             {
                 for (Tuint i = 0; i < 3; ++i)
@@ -485,20 +494,20 @@ void generate_IC(vector<Vector<T, 3>>& x, vector<Vector<T, 3>>& v, Tfloat& mass)
                 }
             } while (xk.squaredNorm() >= 1);
             x[k] = xk;
-            vk += Vector<T, 3>({ -xk[1], xk[0], 0 }) / (Vector<T, 3>({ -xk[1], xk[0], 0 })).norm() * 0.4f
-                  * min(xk.norm() * 10, (T)1);
+            vk += Vector<Tfloat, 3>({ -xk[1], xk[0], 0 }) / (Vector<Tfloat, 3>({ -xk[1], xk[0], 0 })).norm() * 0.4f
+                  * min(xk.norm() * 10, (Tfloat)1);
             if (k < N / 2)
                 vk = -vk;
             v[k] = vk;
             if (k < N / 2)
             {
-                x[k] += Vector<T, 3>{ 0.8, 0.2, 0.0 };
-                v[k] += Vector<T, 3>{ -0.4, 0.0, 0.0 };
+                x[k] += Vector<Tfloat, 3>{ 0.8, 0.2, 0.0 };
+                v[k] += Vector<Tfloat, 3>{ -0.4, 0.0, 0.0 };
             }
             else
             {
-                x[k] -= Vector<T, 3>{ 0.8, 0.2, 0.0 };
-                v[k] += Vector<T, 3>{ 0.4, 0.0, 0.0 };
+                x[k] -= Vector<Tfloat, 3>{ 0.8, 0.2, 0.0 };
+                v[k] += Vector<Tfloat, 3>{ 0.4, 0.0, 0.0 };
             }
         }
     }
@@ -609,9 +618,7 @@ int main(int argc, char** argv)
 
             CosmosData<Tfloat> initData;
 
-            vector<Vector<Tfloat, 3>> init_x;
-            vector<Vector<Tfloat, 3>> init_v;
-            Tfloat init_mass;
+            Tuint num_particles = NUM_PARTICLES();
 
             if (argc >= 2)
             {
@@ -620,25 +627,12 @@ int main(int argc, char** argv)
 #if WITH_HDF5
                 if (fn.extension() == ".hdf5")
                 {
-                    generate_IC_HDF5(cosmic, init_x, init_v, init_mass, fn);
+                    hdf5_reader reader(fn.string());
+                    num_particles = reader.npart[1];
                 }
-                else
 #endif
-#if WITH_OPENCV
-                {
-                    generate_IC(init_x, init_v, init_mass, fn);
-                }
-#else
-                generate_IC(init_x, init_v, init_mass);
-                cout << "Need opencv to read from image" << endl;
-#endif
-            }
-            else
-            {
-                generate_IC(init_x, init_v, init_mass);
             }
 
-            const Tuint num_particles = init_x.size();
             cout << "num_particles=" << num_particles << endl;
 
             if (false)
@@ -764,11 +758,32 @@ int main(int argc, char** argv)
                 initData.tmps.assign(device, num_particles);
             }
 
-            initData.x = std::move(init_x);
-            initData.v = std::move(init_v);
-#if !CONSTANT_MASS
-            initData.mass.fill(init_mass);
+            Tfloat init_mass;
+
+            if (argc >= 2)
+            {
+                fs::path fn = argv[1 + demo_run % (argc - 1)];
+                cout << "fn=" << fn << ", ext=" << fn.extension();
+#if WITH_HDF5
+                if (fn.extension() == ".hdf5")
+                {
+                    generate_IC_HDF5(cosmic, initData.x, initData.v, init_mass, fn);
+                }
+                else
 #endif
+#if WITH_OPENCV
+                {
+                    generate_IC(initData.x, initData.v, init_mass, fn);
+                }
+#else
+                generate_IC(initData.x, initData.v, init_mass);
+                cout << "Need opencv to read from image" << endl;
+#endif
+            }
+            else
+            {
+                generate_IC(initData.x, initData.v, init_mass);
+            }
 
             cosmos.init(std::move(initData));
 
@@ -858,7 +873,7 @@ int main(int argc, char** argv)
 
             float rate = 0;
 
-            for (size_t step = 0; !quit; ++step)
+            for (Tsize_t step = 0; !quit; ++step)
             {
                 if (cosmic.is_cosmic ? (cosmic.a > 1) : (step == 2000))
                 {
