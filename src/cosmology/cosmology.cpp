@@ -22,9 +22,12 @@ using Vector3f = Eigen::Vector3f;
 
    The parameters are optimise for big GPUs with many registers.
    If you want to run it on smaller GPUs with <256 registers,
-   you might want to reduce MULTIPOLE_ORDER to 2 or so. The precision will be worse,
+   you might want to reduce MULTIPOLE_ORDER to 3 or so. The precision will be worse,
    but at least it will run with usable performance.
- */
+
+   By default, this program uses bfloat16 types for higher order terms.
+   If your GPU does not support bfloat16, disable HAVE_BFLOAT16.
+*/
 
 PARAMOPT<bool> PRECISION_TEST("precision_test", false);
 PARAMOPT<string> IC("ic", "");
@@ -595,7 +598,6 @@ int main(int argc, char** argv)
 
         float distance = 2;
         Vector<float, 2> theta = { 0, 0 };
-        Vector<float, 2> xypos = { 0, 0 };
 
         bool quit = false;
         for (Tuint demo_run = 0; !quit; ++demo_run)
@@ -923,10 +925,6 @@ int main(int argc, char** argv)
                         theta += (mouse - last_mouse) * 0.002f;
                         theta[1] = clamp(theta[1], static_cast<float>(-PI / 2), static_cast<float>(PI / 2));
                     }
-                    else if (mouse_button_down == 3)
-                    {
-                        xypos -= Vector<float, 2>{ mouse[0] - last_mouse[0], mouse[1] - last_mouse[1] } * 0.004f;
-                    }
                     last_mouse = mouse;
                 }
 
@@ -1065,11 +1063,11 @@ int main(int argc, char** argv)
                     {
                         if (device.get_envmode() == env_CUDA)
                         {
-                            vulkanRenderer->render(vulkanData.x, vulkanData.potential, distance, theta, xypos);
+                            vulkanRenderer->render(vulkanData.x, vulkanData.potential, distance, theta);
                         }
                         else
                         {
-                            vulkanRenderer->render(cosmos.x, cosmos.potential, distance, theta, xypos);
+                            vulkanRenderer->render(cosmos.x, cosmos.potential, distance, theta);
                         }
                     }
 #endif

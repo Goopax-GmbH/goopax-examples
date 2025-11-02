@@ -124,7 +124,6 @@ int main(int argc, char** argv)
     Vector<float, 2> theta = { 0, 0 };
     Vector<float, 2> last_mouse;
     int mouse_button_down = 0;
-    Vector<float, 2> xypos = { 0, 0 };
 
     bool quit = false;
     while (!quit)
@@ -171,10 +170,6 @@ int main(int argc, char** argv)
                 theta += (mouse - last_mouse) * 0.002f;
                 theta[1] = clamp(theta[1], static_cast<float>(-PI / 2), static_cast<float>(PI / 2));
             }
-            else if (mouse_button_down == 3)
-            {
-                xypos -= Vector<float, 2>{ mouse[0] - last_mouse[0], mouse[1] - last_mouse[1] } * 0.004f;
-            }
             last_mouse = mouse;
         }
 
@@ -213,7 +208,7 @@ int main(int argc, char** argv)
 #if WITH_METAL
         Renderer.render(x);
 #elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
-        Renderer.render(x, distance, theta, xypos);
+        Renderer.render(x, distance, theta);
 #else
         render(window->window, x);
         SDL_GL_SwapWindow(window->window);
