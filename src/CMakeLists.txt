@@ -8,7 +8,7 @@ else()
   set (CMAKE_CXX_STANDARD 23)
 endif()
 
-# Disabling cuda examples by default because of compatibility issues between cuda and recent gcc versions
+# Disabling cuda-interop example by default because of compatibility issues between cuda and recent gcc versions
 option(WITH_CUDA "WITH_CUDA" OFF)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH on)
@@ -36,6 +36,7 @@ find_package(OpenCL)
 find_package(Boost 1.65.0 COMPONENTS multiprecision iostreams)
 find_package(SDL3 PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/sdl3")
 find_package(Eigen3 3.3 NO_MODULE PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/eigen")
+find_package(glm)
 
 if (WIN32)
   set(OpenCV_STATIC 1)
@@ -46,6 +47,7 @@ find_path(BOOST_INCLUDE_DIR
   boost/multiprecision/cpp_bin_float.hpp
   PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/build_boost-prefix/src/build_boost/include"
 )
+
 find_path(GLATTER_INCLUDE_DIR
   glatter/glatter.h
   PATHS "${CMAKE_CURRENT_BINARY_DIR}/ext/build_glatter-prefix/src/build_glatter/include"
