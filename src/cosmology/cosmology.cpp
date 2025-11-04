@@ -1029,7 +1029,7 @@ int main(int argc, char** argv)
 
                                 ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
                                    << " ("
-                                   << static_cast<ssize_t>(std::abs(caltime + (caltime >= 0 ? 1.0 : 0.0) * yr_) / yr_)
+                                   << static_cast<int64_t>(std::abs(caltime + (caltime >= 0 ? 1.0 : 0.0) * yr_) / yr_)
                                    << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
                                    << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
                                    << endl;
