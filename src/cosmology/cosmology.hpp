@@ -314,19 +314,20 @@ struct vicinity_data
             }
         }
 
+        cout << "\nvicinity_map:\n";
         for (ac[1] = -maxvec[1]; ac[1] <= maxvec[1]; ++ac[1])
         {
             for (ac[2] = -maxvec[2]; ac[2] <= maxvec[2]; ++ac[2])
             {
                 for (ac[0] = -maxvec[0]; ac[0] <= maxvec[0]; ++ac[0])
                 {
-                    if (ranges::contains(vicinity_vec, ac))
+                    if (ac.squaredNorm() == 0)
                     {
-                        cout << "L ";
+                        cout << "X ";
                     }
                     else if (local_indices.contains(make_index(ac)))
                     {
-                        cout << "X ";
+                        cout << "L ";
                     }
                     else
                     {
@@ -337,9 +338,6 @@ struct vicinity_data
             }
             cout << endl;
         }
-
-        // cout << "local_vec=" << local_vec << endl;
-        // cout << "vicinity_vec=" << vicinity_vec << endl;
 
         assert(max_e > maxvec[0]);
         assert(max_e > maxvec[1]);
@@ -1118,16 +1116,16 @@ struct Cosmos : public CosmosData<T>
         if (!verify.valid())
         {
             verify.assign(device,
-                          [this](const resource<Vector<T, 3>>& x,
-                                 const resource<Vector<T, 3>>& force,
+                          [](const resource<Vector<T, 3>>& x,
+                             const resource<Vector<T, 3>>& force,
 #if !CONSTANT_MASS
-                                 const resource<T>& mass,
+                             const resource<T>& mass,
 #endif
-                                 const resource<T>& potential,
+                             const resource<T>& potential,
 #if CALC_POTENTIAL
-                                 gather_add<double>& poterr,
+                             gather_add<double>& poterr,
 #endif
-                                 gpu_uint pnum) -> gather_add<double> {
+                             gpu_uint pnum) -> gather_add<double> {
                               gpu_double ret = 0;
 #if CALC_POTENTIAL
                               poterr = 0;
@@ -1988,24 +1986,22 @@ struct Cosmos : public CosmosData<T>
                 });
             };
 
-            futures.push(
-                make_surrounding.assign(policy,
-                                        device,
-                                        [this, make_surrounding_func](pair<gpu_uint, gpu_uint> treerange_parent,
-                                                                      pair<gpu_uint, gpu_uint> treerange) {
-                                            make_surrounding_func(treerange_parent, treerange, false);
-                                        }));
+            futures.push(make_surrounding.assign(
+                policy,
+                device,
+                [make_surrounding_func](pair<gpu_uint, gpu_uint> treerange_parent, pair<gpu_uint, gpu_uint> treerange) {
+                    make_surrounding_func(treerange_parent, treerange, false);
+                }));
             futures.push(make_surrounding_with_scratch.assign(
                 policy,
                 device,
-                [this, make_surrounding_func](pair<gpu_uint, gpu_uint> treerange_parent,
-                                              pair<gpu_uint, gpu_uint> treerange) {
+                [make_surrounding_func](pair<gpu_uint, gpu_uint> treerange_parent, pair<gpu_uint, gpu_uint> treerange) {
                     make_surrounding_func(treerange_parent, treerange, true);
                 }));
         }
 
         futures.push(
-            movefunc.assign(policy, device, [this](gpu_T dt, resource<Vector<T, 3>>& v, resource<Vector<T, 3>>& x) {
+            movefunc.assign(policy, device, [](gpu_T dt, resource<Vector<T, 3>>& v, resource<Vector<T, 3>>& x) {
                 gpu_for_global(0, x.size(), [&](gpu_uint k) {
                     Vector<gpu_T, 3> old_x = x[k];
 
@@ -2020,8 +2016,8 @@ struct Cosmos : public CosmosData<T>
                 });
             }));
 
-        futures.push(kick.assign(
-            policy, device, [this](gpu_T dt, const resource<Vector<T, 3>>& force, resource<Vector<T, 3>>& v) {
+        futures.push(
+            kick.assign(policy, device, [](gpu_T dt, const resource<Vector<T, 3>>& force, resource<Vector<T, 3>>& v) {
                 gpu_for_global(0, v.size(), [&](gpu_uint k) {
                     v[k] += force[k] * dt;
                     gpu_assert(isfinite(v[k].squaredNorm()));
