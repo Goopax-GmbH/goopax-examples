@@ -1,15 +1,3 @@
-#include "cosmology.hpp"
-#include "cube.hpp"
-#include "multipole_cart.hpp"
-#include <filesystem>
-#include <goopax_extra/random.hpp>
-#if WITH_HDF5
-#include <hdf5.h>
-#endif
-
-namespace fs = std::filesystem;
-using Vector3f = Eigen::Vector3f;
-
 /**
    \example cosmology.cpp
    FMM N-body example program
@@ -28,6 +16,18 @@ using Vector3f = Eigen::Vector3f;
    By default, this program uses bfloat16 types for higher order terms.
    If your GPU does not support bfloat16, disable HAVE_BFLOAT16.
 */
+
+#include "cosmology.hpp"
+#include "cube.hpp"
+#include "multipole_cart.hpp"
+#include <filesystem>
+#include <goopax_extra/random.hpp>
+#if WITH_HDF5
+#include <hdf5.h>
+#endif
+
+namespace fs = std::filesystem;
+using Vector3f = Eigen::Vector3f;
 
 PARAMOPT<bool> PRECISION_TEST("precision_test", false);
 PARAMOPT<string> IC("ic", "");
