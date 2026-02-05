@@ -12,10 +12,7 @@ int main()
 
     for (goopax_device device : devices())
     {
-        kernels.emplace_back(device, []() {
-            gpu_ostream out(std::cout);
-            out << "Hello from thread " << global_id() << std::endl;
-        });
+        kernels.emplace_back(device, []() { gpu_cout << "Hello from thread " << global_id() << std::endl; });
     }
 
     for (auto& hello : kernels)
