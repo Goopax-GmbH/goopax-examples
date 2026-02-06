@@ -150,7 +150,7 @@ template<class T>
 auto calc_sig_fast(const Vector<T, 3>& x, Tuint32_t)
 {
     const Tuint max_depthbits = 32;
-    using sig_t = typename gettype<T>::template change<Tuint32_t>::type;
+    using sig_t = typename change_gpu_mode<uint32_t, T>::type;
 
     Vector<Tuint, 3> depth = { (max_depthbits + 2) / 3, (max_depthbits + 1) / 3, (max_depthbits) / 3 };
     sig_t sig = 0;

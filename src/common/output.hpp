@@ -1,5 +1,7 @@
+#pragma once
 #include <goopax_extra/output.hpp>
 
+#if __cpp_concepts >= 201907
 template<typename S>
 concept ostream_type = std::same_as<S, std::ostream> || std::same_as<S, goopax::gpu_ostream>;
 
@@ -61,3 +63,4 @@ S& operator<<(S& s, const std::pair<A, B>& p)
 {
     return s << std::make_tuple(p.first, p.second);
 }
+#endif
