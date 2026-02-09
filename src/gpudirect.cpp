@@ -9,6 +9,7 @@
  */
 
 #include <goopax>
+#include <unistd.h>
 
 using namespace goopax;
 using namespace std;
