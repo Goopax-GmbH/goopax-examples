@@ -104,17 +104,20 @@ struct matmul
             }
         }
 
-        if constexpr (!std::is_same_v<ab_float_type, Ttf32>)
+        if (device.support_type(ab_float_type()))
         {
-            kernel_simple.assign(device, [this]() {
-                gpu_for_group(0, Nk, [&](gpu_uint k) {
-                    gpu_for_local(0, Nm, [&](gpu_uint m) {
-                        gpu_c_float_type sum = static_cast<c_float_type>(0);
-                        gpu_for(0, Nl, [&](gpu_uint l) { sum += A[get_index_a(k, l)] * B[get_index_b(l, m)]; });
-                        C[get_index_c(k, m)] = sum;
+            if constexpr (!std::is_same_v<ab_float_type, Ttf32>)
+            {
+                kernel_simple.assign(device, [this]() {
+                    gpu_for_group(0, Nk, [&](gpu_uint k) {
+                        gpu_for_local(0, Nm, [&](gpu_uint m) {
+                            gpu_c_float_type sum = static_cast<c_float_type>(0);
+                            gpu_for(0, Nl, [&](gpu_uint l) { sum += A[get_index_a(k, l)] * B[get_index_b(l, m)]; });
+                            C[get_index_c(k, m)] = sum;
+                        });
                     });
                 });
-            });
+            }
         }
 
         // Choosing suitable matrix block sizes.
@@ -123,6 +126,11 @@ struct matmul
         unsigned int bk = 64;
         unsigned int bl = 16;
         unsigned int bm = 64;
+        if (device.max_registers() < 80)
+        {
+            bk = 32;
+            bm = 32;
+        }
 
         if (device.support_warp_matrix<ab_float_type, c_float_type>(bk, bm, bl))
         {
@@ -261,6 +269,7 @@ int main(int argc, char** argv)
         cout << "running on device " << device.name() << ", env=" << device.get_envmode() << endl;
         cout << "matrix sizes: matrix<T_AB, " << NK() << ", " << NL() << "> * matrix<T_AB, " << NL() << ", " << NM()
              << "> + matrix<T_C, " << NK() << ", " << NM() << ">" << endl;
+
         if (device.support_type(Ttf32()))
         {
             run_with_types<Ttf32, Tfloat>(device);
@@ -270,15 +279,10 @@ int main(int argc, char** argv)
             run_with_types<Tdouble, Tdouble>(device);
         }
         run_with_types<Tfloat, Tfloat>(device);
-        if (device.support_type(Thalf()))
-        {
-            run_with_types<Thalf, Thalf>(device);
-            run_with_types<Thalf, Tfloat>(device);
-        }
-        if (device.support_type(Tbfloat16()))
-        {
-            run_with_types<Tbfloat16, Tfloat>(device);
-        }
+        run_with_types<Thalf, Thalf>(device);
+        run_with_types<Thalf, Tfloat>(device);
+        run_with_types<Tbfloat16, Tfloat>(device);
+
         cout << endl << endl;
     }
 }
