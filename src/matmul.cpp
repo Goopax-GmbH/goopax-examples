@@ -81,29 +81,6 @@ struct matmul
         B.assign(device, Nl * Nm);
         C.assign(device, Nk * Nm);
 
-        std::random_device rd;
-        WELL512_data rnd(device, device.default_global_size_max(), rd());
-        kernel fill_random(device, [&rnd](resource<ab_float_type>& a) {
-            WELL512_lib rndlib(rnd);
-
-            for_each_global(a.begin(), a.end(), [&](gpu_ab_float_type& v) {
-                v = static_cast<gpu_ab_float_type>(rndlib.gaussian_distribution());
-            });
-        });
-
-        fill_random(A);
-        fill_random(B);
-
-        {
-            std::default_random_engine generator;
-            std::normal_distribution<double> distribution;
-            test_vector = VectorX<double>(Nm);
-            for (double& e : test_vector)
-            {
-                e = distribution(generator);
-            }
-        }
-
         if (device.support_type(ab_float_type()))
         {
             if constexpr (!std::is_same_v<ab_float_type, Ttf32>)
@@ -164,6 +141,32 @@ struct matmul
                              COL_MAJOR_C() ? Nk : Nm);
                 });
             });
+        }
+
+        if (kernel_simple.valid() || kernel_tensor.valid())
+        {
+            std::random_device rd;
+            WELL512_data rnd(device, device.default_global_size_max(), rd());
+            kernel fill_random(device, [&rnd](resource<ab_float_type>& a) {
+                WELL512_lib rndlib(rnd);
+
+                for_each_global(a.begin(), a.end(), [&](gpu_ab_float_type& v) {
+                    v = static_cast<gpu_ab_float_type>(rndlib.gaussian_distribution());
+                });
+            });
+
+            fill_random(A);
+            fill_random(B);
+
+            {
+                std::default_random_engine generator;
+                std::normal_distribution<double> distribution;
+                test_vector = VectorX<double>(Nm);
+                for (double& e : test_vector)
+                {
+                    e = distribution(generator);
+                }
+            }
         }
     }
 
