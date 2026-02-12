@@ -9,7 +9,11 @@
  */
 
 #include <goopax>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 using namespace goopax;
 using namespace std;
