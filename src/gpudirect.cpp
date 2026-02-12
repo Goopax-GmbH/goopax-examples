@@ -42,7 +42,7 @@ int main()
     kernel get_sum(device, [&goopax_buffer]() {
         gpu_uint sum = 0;
         gpu_for_global(0, width * height, [&](gpu_uint k) { sum += goopax_buffer[k]; });
-        return gather_add(sum);
+        return gather_add<unsigned int>(sum);
     });
 
     // start of image loop...
