@@ -230,7 +230,8 @@ struct matmul
         VectorX<double> rwant = TA.template cast<double>() * (TB.template cast<double>() * test_vector);
         VectorX<double> rhave = TC.template cast<double>() * test_vector;
 
-        cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl;
+        cout << "rhave.norm()=" << rhave.norm() << ", rwant.norm()=" << rwant.norm()
+             << ", err=" << (rhave - rwant).norm() / rwant.norm() << endl;
     }
 };
 
@@ -273,6 +274,13 @@ int main(int argc, char** argv)
         cout << "matrix sizes: matrix<T_AB, " << NK() << ", " << NL() << "> * matrix<T_AB, " << NL() << ", " << NM()
              << "> + matrix<T_C, " << NK() << ", " << NM() << ">" << endl;
 
+        run_with_types<Tint8_t, Tint>(device);
+        run_with_types<Tuint8_t, Tint>(device);
+        run_with_types<Thalf, Thalf>(device);
+        run_with_types<Thalf, Tfloat>(device);
+        run_with_types<Tbfloat16, Tfloat>(device);
+        run_with_types<Tfloat, Tfloat>(device);
+
         if (device.support_type(Ttf32()))
         {
             run_with_types<Ttf32, Tfloat>(device);
@@ -281,10 +289,6 @@ int main(int argc, char** argv)
         {
             run_with_types<Tdouble, Tdouble>(device);
         }
-        run_with_types<Tfloat, Tfloat>(device);
-        run_with_types<Thalf, Thalf>(device);
-        run_with_types<Thalf, Tfloat>(device);
-        run_with_types<Tbfloat16, Tfloat>(device);
 
         cout << endl << endl;
     }
