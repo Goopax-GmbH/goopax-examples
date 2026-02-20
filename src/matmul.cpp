@@ -18,9 +18,9 @@ using namespace goopax;
 using namespace std;
 
 // Matrix sizes. Can be specified as command line arguments. See matmul --help
-PARAMOPT<size_t> NK("nk", 2048);
-PARAMOPT<size_t> NL("nl", 2048);
-PARAMOPT<size_t> NM("nm", 2048);
+PARAMOPT<size_t> NK("nk", 4096);
+PARAMOPT<size_t> NL("nl", 4096);
+PARAMOPT<size_t> NM("nm", 4096);
 
 PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", false);
@@ -81,6 +81,17 @@ struct matmul
         B.assign(device, Nl * Nm);
         C.assign(device, Nk * Nm);
 
+        cout << "memory requirements [MB]: " << (A.size() * sizeof(ab_float_type) >> 16) << " + "
+             << (B.size() * sizeof(ab_float_type) >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16) << " = "
+             << ((A.size() * sizeof(ab_float_type) + B.size() * sizeof(ab_float_type) + C.size() * sizeof(c_float_type))
+                 >> 16)
+             << ", device cache: ";
+        if (device.cache_size() == 0)
+            cout << "unknown";
+        else
+            cout << (device.cache_size() >> 16);
+        cout << endl;
+
         if (device.support_type(ab_float_type()))
         {
             if constexpr (!std::is_same_v<ab_float_type, Ttf32>)
@@ -117,8 +128,31 @@ struct matmul
                 assert(Nm % bm == 0);
 
                 gpu_for_group(0, (Nk / bk) * (Nm / bm), [&](gpu_uint block) {
-                    gpu_uint koff = block / (Nm / bm) * bk;
-                    gpu_uint moff = block % (Nm / bm) * bm;
+                    gpu_uint block_k;
+                    gpu_uint block_m;
+
+                    if (true)
+                    {
+                        // different, possibly more cache friendly layout.
+                        int ng = num_groups();
+                        int sy1 = 1;
+                        while (sy1 * sy1 < ng && Nk % (bk * sy1 * 2) == 0 && Nm % (bm * sy1 * 2) == 0)
+                        {
+                            sy1 *= 2;
+                        }
+                        cout << "ng=" << ng << ", sy1=" << sy1 << endl;
+
+                        block_k = block / sy1 % sy1 + block / (sy1 * sy1) / (Nm / bm / sy1) * sy1;
+                        block_m = block % sy1 + block / (sy1 * sy1) % (Nm / bm / sy1) * sy1;
+                    }
+                    else
+                    {
+                        block_k = block / (Nm / bm);
+                        block_m = block % (Nm / bm);
+                    }
+
+                    gpu_uint koff = block_k * bk;
+                    gpu_uint moff = block_m * bm;
 
                     warp_matrix<c_float_type> mc(bk, bm, static_cast<c_float_type>(0));
 
