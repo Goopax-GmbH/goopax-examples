@@ -13,25 +13,24 @@ using namespace goopax;
 using namespace std;
 
 static constexpr uint32_t N = 100000;
+static constexpr unsigned int Nsub = 8;
 
 int main()
 {
-    vector<pair<unsigned int, std::function<goopax_future<uint64_t>()>>> kernels;
+    vector<kernel<uint64_t()>> kernels;
 
     std::random_device rd;
     for (goopax_device device : goopax::devices(env_ALL))
     {
-        unsigned int Nsub;
         WELL512_data rnd(device, device.default_global_size_max(), rd());
 
-        kernel newkernel(device, [&Nsub, &rnd]() -> gather_add<uint64_t> {
+        kernel newkernel(device, [&rnd]() -> gather_add<uint64_t> {
             WELL512_lib rndlib(rnd);
 
             gpu_uint num = 0;
 
             gpu_for(0, N, [&](gpu_int) {
-                array<gpu_uint, 16> rnd_values = rndlib.generate();
-                Nsub = rnd_values.size() / 2;
+                array<gpu_uint, Nsub * 2> rnd_values = rndlib.generate();
                 for (unsigned int sub = 0; sub < Nsub; ++sub)
                 {
                     // get x and y values in range 0..1
@@ -46,7 +45,7 @@ int main()
         cout << "Device " << kernels.size() << ": " << device.name() << ", #threads: " << newkernel.global_size()
              << ", envmode=" << device.get_envmode() << endl;
 
-        kernels.emplace_back(Nsub, newkernel);
+        kernels.push_back(newkernel);
     }
     cout << endl;
 
@@ -54,20 +53,19 @@ int main()
     {
         cout << "Running..." << std::flush;
         auto time_start = chrono::steady_clock::now();
-        vector<pair<uint64_t, goopax_future<uint64_t>>> results;
-        for (auto& k : kernels)
+
+        vector<goopax_future<uint64_t>> results(kernels.size());
+        for (int i = 0; i < kernels.size(); ++i)
         {
-            goopax_future<uint64_t> r = k.second();
-            r.set_callback([i = int(&k - &kernels[0])]() { cout << i << std::flush; });
-            results.push_back({ k.first, std::move(r) });
+            (results[i] = kernels[i]()).set_callback([i]() { cout << i << std::flush; });
         }
 
         uint64_t darts = 0;
         uint64_t hits = 0;
-        for (auto& r : results)
+        for (int i = 0; i < kernels.size(); ++i)
         {
-            darts += uint64_t(N) * r.first * r.second.global_size();
-            hits += r.second.get();
+            darts += uint64_t(N) * Nsub * kernels[i].global_size();
+            hits += results[i].get();
         }
         double pi = (4 * static_cast<double>(hits)) / darts;
         double time = chrono::duration<double>(chrono::steady_clock::now() - time_start).count();
