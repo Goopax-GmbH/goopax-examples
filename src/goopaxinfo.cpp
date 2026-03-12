@@ -91,7 +91,7 @@ int main()
                 {
                     for (size_t k = 0; k < N; ++k)
                     {
-                        cout << "      mode " << k << ": sizes=" << modes[k].sizes << ", ab=" << modes[k].type_enum_ab
+                        cout << "      mode " << k << ": sizes=" << modes[k].mnk << ", ab=" << modes[k].type_enum_ab
                              << ", c=" << modes[k].type_enum_c
                              << ", type_AB=" << goopax::detail::get_reverse_type_enum(modes[k].type_enum_ab)
                              << ", type_C=" << goopax::detail::get_reverse_type_enum(modes[k].type_enum_c) << endl;
