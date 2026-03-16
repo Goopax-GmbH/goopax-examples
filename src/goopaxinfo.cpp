@@ -5,6 +5,7 @@
 
 #include <goopax>
 #include <goopax_extra/output.hpp>
+#include <goopax_extra/types.hpp>
 
 using namespace goopax;
 using namespace std;
@@ -72,11 +73,12 @@ int main()
                      << "    registers: " << d.max_registers() << endl;
                 cout << "    supported types:";
                 const char* delim = " ";
-                for (auto* t : goopax::detail::type_enum_type_tab)
+
+                for (unsigned int t = 0; t < std::size(type_enum_type_tab); ++t)
                 {
-                    if (d.support_type(*t))
+                    if (d.support_type(static_cast<type_enum_t>(t * 4)))
                     {
-                        cout << delim << goopax::pretty_typename(*t);
+                        cout << delim << goopax::pretty_typename(*type_enum_type_tab[t]);
                         delim = ", ";
                     }
                 }
@@ -93,8 +95,8 @@ int main()
                     {
                         cout << "      mode " << k << ": sizes=" << modes[k].mnk << ", ab=" << modes[k].type_enum_ab
                              << ", c=" << modes[k].type_enum_c
-                             << ", type_AB=" << goopax::detail::get_reverse_type_enum(modes[k].type_enum_ab)
-                             << ", type_C=" << goopax::detail::get_reverse_type_enum(modes[k].type_enum_c) << endl;
+                             << ", type_AB=" << goopax::get_reverse_type_enum(modes[k].type_enum_ab)
+                             << ", type_C=" << goopax::get_reverse_type_enum(modes[k].type_enum_c) << endl;
                     }
                 }
                 else

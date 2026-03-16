@@ -16,6 +16,7 @@
 #include <chrono>
 #include <goopax_draw/window_sdl.h>
 #include <goopax_extra/struct_types.hpp>
+#include <goopax_extra/types.hpp>
 
 using namespace goopax;
 using namespace std;
@@ -39,7 +40,7 @@ static complex<double> clamp_range(const complex<double>& x)
              std::clamp(x.imag(), max_allowed_range[0].imag(), max_allowed_range[1].imag()) };
 }
 
-complex<gpu_type<>> cast(const complex<gpu_type<>>& value, const std::type_info& type)
+complex<gpu_type<>> cast(const complex<gpu_type<>>& value, type_enum_t type)
 {
     return complex<gpu_type<>>(value.real().cast(type), value.imag().cast(type));
 }
@@ -50,7 +51,7 @@ complex<gpu_type<>> cast(const complex<gpu_type<>>& value, const std::type_info&
 // the use of unspecified goopax types (gpu_type<>), which allows the type to be specified at runtime.
 std::function<
     void(image_resource<2, Vector<Tuint8_t, 4>, true>& image, const complex<gpu_double> center, const gpu_float scale)>
-make_kernel_function(const std::type_info& type)
+make_kernel_function(type_enum_t type)
 {
     return [&type](image_resource<2, Vector<Tuint8_t, 4>, true>& image,
                    const complex<gpu_double> center,
@@ -74,7 +75,7 @@ make_kernel_function(const std::type_info& type)
                            {
                                int Ninner = 4;
 #if defined(__STDCPP_FLOAT16_T__)
-                               if (type == typeid(std::float16_t))
+                               if (type == type_enum<std::float16_t>::value)
                                {
                                    Ninner = 2;
                                }
@@ -107,7 +108,7 @@ int main(int, char**)
 {
     auto window = sdl_window::create("mandelbrot", { 640, 480 }, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 
-    kernel render(window->device, make_kernel_function(typeid(float)));
+    kernel render(window->device, make_kernel_function(type_enum<float>::value));
 
     complex<double> moveto = { -0.796570904132624102, 0.183652206054726097 };
 
@@ -180,14 +181,15 @@ int main(int, char**)
             }
             else if (e->type == SDL_EVENT_KEY_DOWN)
             {
-                auto set_type = [&](const std::type_info& type) {
+                auto set_type = [&](type_enum_t type) {
                     if (!window->device.support_type(type))
                     {
-                        cout << "Type " << pretty_typename(type) << " not supported on this device." << endl;
+                        cout << "Type " << pretty_typename(*get_reverse_type_enum(type))
+                             << " not supported on this device." << endl;
                     }
                     else
                     {
-                        cout << "Setting type to " << pretty_typename(type) << endl;
+                        cout << "Setting type to " << pretty_typename(*get_reverse_type_enum(type)) << endl;
                         render.assign(window->device, make_kernel_function(type));
                     }
                 };
@@ -201,21 +203,17 @@ int main(int, char**)
                         window->toggle_fullscreen();
                         break;
                     case '1':
-                        set_type(typeid(float));
+                        set_type(type_enum<float>::value);
                         break;
                     case '2':
-                        set_type(typeid(double));
+                        set_type(type_enum<double>::value);
                         break;
-#if defined(__STDCPP_FLOAT16_T__)
                     case '3':
-                        set_type(typeid(std::float16_t));
+                        set_type(type_enum<precision::fp16>::value);
                         break;
-#endif
-#if defined(__STDCPP_BFLOAT16_T__)
                     case '4':
-                        set_type(typeid(std::bfloat16_t));
+                        set_type(type_enum<precision::bf16>::value);
                         break;
-#endif
                 };
             }
         }
