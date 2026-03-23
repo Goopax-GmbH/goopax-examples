@@ -74,11 +74,11 @@ int main()
                 cout << "    supported types:";
                 const char* delim = " ";
 
-                for (unsigned int t = 0; t < std::size(type_enum_type_tab); ++t)
+                for (unsigned int t = 0; t < std::size(type_enum_raw_names); ++t)
                 {
-                    if (d.support_type(static_cast<type_enum_t>(t * 4)))
+                    if (d.support_type(static_cast<type_enum_t>(t * num_type_modes)))
                     {
-                        cout << delim << goopax::pretty_typename(*type_enum_type_tab[t]);
+                        cout << delim << type_enum_raw_names[t];
                         delim = ", ";
                     }
                 }
@@ -86,29 +86,16 @@ int main()
 
                 cout << "    warp_matrix modes:" << endl;
 
-                const matrix_support_info* modes;
-                unsigned int N = detail::goopax_6_get_matrix_support_table(d.get_impl(), &modes);
-
-                if (N != 0)
+                if (d.get_matrix_support_table())
                 {
-                    for (size_t k = 0; k < N; ++k)
+                    for (auto* mi = d.get_matrix_support_table(); mi; mi = mi->next)
                     {
-                        cout << "      mode " << k << ": sizes=" << modes[k].mnk << ", ab=" << modes[k].type_enum_ab
-                             << ", c=" << modes[k].type_enum_c
-                             << ", type_AB=" << goopax::get_reverse_type_enum(modes[k].type_enum_ab)
-                             << ", type_C=" << goopax::get_reverse_type_enum(modes[k].type_enum_c) << endl;
+                        cout << "      " << *mi << endl;
                     }
                 }
                 else
                 {
-                    if (static_cast<goopax::envmode>(env) == env_CPU)
-                    {
-                        cout << "      any" << endl;
-                    }
-                    else
-                    {
-                        cout << "      none" << endl;
-                    }
+                    cout << "      NONE" << endl;
                 }
             }
         }
