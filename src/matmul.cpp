@@ -154,24 +154,24 @@ struct matmul
                     gpu_uint koff = block_k * bk;
                     gpu_uint moff = block_m * bm;
 
-                    warp_matrix<c_float_type> mc(bk, bm, static_cast<c_float_type>(0));
+                    matrix::warp_matrix<c_float_type> mc(bk, bm, static_cast<c_float_type>(0));
 
                     gpu_for(0, Nl, bl, [&](gpu_uint loff) {
-                        warp_matrix<ab_float_type> ma(bk,
-                                                      bl,
-                                                      A.begin() + get_index_a(koff, loff),
-                                                      COL_MAJOR_A() ? col_major : row_major,
-                                                      COL_MAJOR_A() ? Nk : Nl);
-                        warp_matrix<ab_float_type> mb(bl,
-                                                      bm,
-                                                      B.begin() + get_index_b(loff, moff),
-                                                      COL_MAJOR_B() ? col_major : row_major,
-                                                      COL_MAJOR_B() ? Nl : Nm);
+                        matrix::warp_matrix<ab_float_type> ma(bk,
+                                                              bl,
+                                                              A.begin() + get_index_a(koff, loff),
+                                                              COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
+                                                              COL_MAJOR_A() ? Nk : Nl);
+                        matrix::warp_matrix<ab_float_type> mb(bl,
+                                                              bm,
+                                                              B.begin() + get_index_b(loff, moff),
+                                                              COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
+                                                              COL_MAJOR_B() ? Nl : Nm);
                         mc = multiply_add(ma, mb, mc);
                     });
 
                     mc.store(C.begin() + get_index_c(koff, moff),
-                             COL_MAJOR_C() ? col_major : row_major,
+                             COL_MAJOR_C() ? matrix::col_major : matrix::row_major,
                              COL_MAJOR_C() ? Nk : Nm);
                 });
             });

@@ -184,12 +184,11 @@ int main(int, char**)
                 auto set_type = [&](type_enum_t type) {
                     if (!window->device.support_type(type))
                     {
-                        cout << "Type " << pretty_typename(*get_reverse_type_enum(type))
-                             << " not supported on this device." << endl;
+                        cout << "Type " << type_name(type) << " not supported on this device." << endl;
                     }
                     else
                     {
-                        cout << "Setting type to " << pretty_typename(*get_reverse_type_enum(type)) << endl;
+                        cout << "Setting type to " << type_name(type) << endl;
                         render.assign(window->device, make_kernel_function(type));
                     }
                 };
