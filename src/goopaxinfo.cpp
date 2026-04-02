@@ -86,7 +86,11 @@ int main()
 
                 cout << "    warp_matrix modes:" << endl;
 
-                if (d.get_matrix_support_table())
+                if (d.get_envmode() == env_CPU)
+                {
+                    cout << "      ANY" << endl;
+                }
+                else if (d.get_matrix_support_table())
                 {
                     for (auto* mi = d.get_matrix_support_table(); mi; mi = mi->next)
                     {
