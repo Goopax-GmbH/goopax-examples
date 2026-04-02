@@ -108,6 +108,8 @@ struct matmul
             }
         }
 
+        unsigned int Nthreads = device.default_local_size();
+
         // Choosing suitable matrix block sizes.
         // Larger values can improve performance, but only if there are
         // enough registers available.
@@ -120,9 +122,9 @@ struct matmul
             bm = 32;
         }
 
-        if (device.support_warp_matrix<ab_float_type, c_float_type>(bk, bm, bl))
+        if (device.support_warp_matrix<ab_float_type, c_float_type>(bk, bm, bl, Nthreads))
         {
-            kernel_tensor.assign(device, [this, bk, bl, bm]() {
+            kernel_tensor.assign(device, [this, bk, bl, bm, Nthreads]() {
                 assert(Nk % bk == 0);
                 assert(Nl % bl == 0);
                 assert(Nm % bm == 0);
@@ -154,16 +156,19 @@ struct matmul
                     gpu_uint koff = block_k * bk;
                     gpu_uint moff = block_m * bm;
 
-                    matrix::warp_matrix<c_float_type> mc(bk, bm, static_cast<c_float_type>(0));
+                    matrix::warp_matrix<c_float_type> mc(bk, bm, Nthreads);
+                    mc.fill(static_cast<c_float_type>(0));
 
                     gpu_for(0, Nl, bl, [&](gpu_uint loff) {
                         matrix::warp_matrix<ab_float_type> ma(bk,
                                                               bl,
+                                                              Nthreads,
                                                               A.begin() + get_index_a(koff, loff),
                                                               COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
                                                               COL_MAJOR_A() ? Nk : Nl);
                         matrix::warp_matrix<ab_float_type> mb(bl,
                                                               bm,
+                                                              Nthreads,
                                                               B.begin() + get_index_b(loff, moff),
                                                               COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
                                                               COL_MAJOR_B() ? Nl : Nm);
