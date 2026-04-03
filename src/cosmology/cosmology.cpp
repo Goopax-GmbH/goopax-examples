@@ -437,7 +437,7 @@ void generate_IC(buffer<Vector<Tfloat, 3>>& x, buffer<Vector<Tfloat, 3>>& v, Tfl
                 r *= static_cast<gpu_float>(max(image.width(), image.height())) * (1.f / numeric_limits<Tuint>::max());
                 r[2] *= 0.1f;
                 gpu_float c = image.read(r.head<2>().eval(), address_clamp | filter_linear)[0];
-                gpu_if(d[3] < c * numeric_limits<gpu_uint>::max())
+                gpu_if(d[3] < c * numeric_limits<unsigned int>::max())
                 {
                     x[k] = r;
                     k += global_size();
