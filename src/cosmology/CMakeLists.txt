@@ -1,7 +1,7 @@
 find_package(HDF5)
 
 
-add_sdl_main(cosmology glatter goopax_draw)
+add_sdl_main(cosmology goopax_draw)
 if (TARGET cosmology)
   if (TARGET opencv AND NOT GOOPAX_DEBUG)
     target_link_libraries(cosmology opencv)

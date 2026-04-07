@@ -604,7 +604,7 @@ int main(int argc, char** argv)
         {
             CosmicData cosmic;
 
-#if WITH_OPENGL
+#if WITH_OPENGL && 0
             optional<opengl_buffer<Vector3<Tfloat>>> x_gl;
             optional<opengl_buffer<Vector4<Tfloat>>> color_gl;
             kernel<void(const buffer<Vector<Tfloat, 3>>& cx, const buffer<Tfloat>& potential)> set_colors;
@@ -720,7 +720,7 @@ int main(int argc, char** argv)
                 }
             }
 #endif
-#if WITH_OPENGL
+#if WITH_OPENGL && 0
             else if (dynamic_cast<sdl_window_gl*>(&*window))
             {
                 x_gl = opengl_buffer<Vector3<Tfloat>>(device, num_particles);
@@ -1071,7 +1071,7 @@ int main(int argc, char** argv)
                         }
                     }
 #endif
-#if WITH_OPENGL
+#if WITH_OPENGL && 0
                     else if (x_gl)
                     {
                         set_colors(cosmos.x, cosmos.potential);
