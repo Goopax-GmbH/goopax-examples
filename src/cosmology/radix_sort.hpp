@@ -1,3 +1,4 @@
+#include <goopax_extra/alloc.hpp>
 #include <goopax_extra/struct_types.hpp>
 
 template<class A, class B, class S>
@@ -342,7 +343,7 @@ struct radix_sort
                     gpu_uint r = keyrange / (1 << bigrange_bits);
 
                     gpu_uint sum = 0;
-                    gpu_for_local(0, intceil(num_groups(), local_size()), [&](gpu_uint t) {
+                    gpu_for_local(0, goopax::detail::intceil(num_groups(), local_size()), [&](gpu_uint t) {
                         gpu_uint pos = r * (1 << bigrange_bits) * num_groups() + key * num_groups() + t;
                         gpu_uint val = 0;
                         gpu_if(t < num_groups())
