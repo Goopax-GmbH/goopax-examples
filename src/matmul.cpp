@@ -62,13 +62,16 @@ try
         return;
     }
 
+    // Matrix buffers
     buffer<ab_float_type> A(device, NK * NL);
-    buffer<double> Ad(device, NK * NL);
     buffer<ab_float_type> B(device, NL * NM);
-    buffer<double> Bd(device, NL * NM);
     buffer<c_float_type> C(device, NK * NM);
 
-    cout << "memory requirements [MB]: " << (A.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + "
+    // Matrix buffers for verification
+    buffer<c_float_type> Ad(device, NK * NL);
+    buffer<c_float_type> Bd(device, NL * NM);
+
+    cout << "Memory requirements [MB]: " << (A.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + "
          << (B.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
          << " = "
          << ((A.size() * get_bits<ab_float_type>::value / 8 + B.size() * get_bits<ab_float_type>::value / 8
@@ -79,11 +82,16 @@ try
         cout << "unknown";
     else
         cout << (device.cache_size() >> 16);
-    cout << endl;
+    cout << "\nRegisters required: "
+         << bk * bl * get_bits<ab_float_type>::value / Nthreads / 32
+                + bl * bm * get_bits<ab_float_type>::value / Nthreads / 32
+                + bk * bm * get_bits<c_float_type>::value / Nthreads / 32
+         << " / " << device.max_registers() << endl;
 
+    // Filling with random numbers
     std::random_device rd;
     WELL512_data rnd(device, device.default_global_size_max(), rd());
-    kernel fill_random(device, [&rnd](resource<ab_float_type>& a, resource<double>& ad) {
+    kernel fill_random(device, [&rnd](resource<ab_float_type>& a, resource<c_float_type>& ad) {
         WELL512_lib rndlib(rnd);
 
         unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
@@ -111,32 +119,13 @@ try
     fill_random(B, Bd);
     C.fill(numeric_limits<c_float_type>::quiet_NaN()).wait();
 
+    // Creating the kernel
     kernel multiply(
         device,
         [bk, bl, bm, Nthreads](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
             gpu_for_group(0, (NK / bk) * (NM / bm), [&](gpu_uint block) {
-                gpu_uint block_k;
-                gpu_uint block_m;
-
-                if (true)
-                {
-                    // different, possibly more cache friendly layout.
-                    int ng = num_groups();
-                    int sy1 = 1;
-                    while (sy1 * sy1 < ng && NK % (bk * sy1 * 2) == 0 && NM % (bm * sy1 * 2) == 0)
-                    {
-                        sy1 *= 2;
-                    }
-                    cout << "ng=" << ng << ", sy1=" << sy1 << endl;
-
-                    block_k = block / sy1 % sy1 + block / (sy1 * sy1) / (NM / bm / sy1) * sy1;
-                    block_m = block % sy1 + block / (sy1 * sy1) % (NM / bm / sy1) * sy1;
-                }
-                else
-                {
-                    block_k = block / (NM / bm);
-                    block_m = block % (NM / bm);
-                }
+                gpu_uint block_k = block / (NM / bm);
+                gpu_uint block_m = block % (NM / bm);
 
                 gpu_uint koff = block_k * bk;
                 gpu_uint moff = block_m * bm;
@@ -145,6 +134,7 @@ try
                 mc.fill(static_cast<c_float_type>(0));
 
                 gpu_for(0, NL(), bl, [&](gpu_uint loff) {
+                    // Loading matrix tile of Matrix A.
                     matrix::warp_matrix<ab_float_type> ma(bk,
                                                           bl,
                                                           Nthreads,
@@ -152,6 +142,8 @@ try
                                                               + (COL_MAJOR_A ? koff + loff * NK() : koff * NL() + loff),
                                                           COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
                                                           COL_MAJOR_A() ? NK() : NL());
+
+                    // Loading matrix tile of Matrix B.
                     matrix::warp_matrix<ab_float_type> mb(bl,
                                                           bm,
                                                           Nthreads,
@@ -159,6 +151,8 @@ try
                                                               + (COL_MAJOR_B ? loff + moff * NL() : loff * NM() + moff),
                                                           COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
                                                           COL_MAJOR_B() ? NL() : NM());
+
+                    // Multiplying matrix tiles, adding the result.
                     mc += ma * mb;
                 });
 
@@ -175,9 +169,8 @@ try
         auto time_end = steady_clock::now();
 
         Tdouble time = duration_cast<duration<double>>(time_end - time_start).count();
-        auto FLOPS = Tdouble(NK()) * NL() * NM() * 2 / time;
-        cout << "Did matrix multiplication in " << time << " seconds. Performance: " << FLOPS / 1E12 << " TFLOPS"
-             << endl;
+        auto OPS = Tdouble(NK()) * NL() * NM() * 2 / time;
+        cout << "Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS" << endl;
     }
     cout << "verifying... " << flush;
 
@@ -192,46 +185,25 @@ try
         }
     }
 
-    MatrixX<double> TA;
-    MatrixX<double> TB;
-    MatrixX<c_float_type> TC;
+    auto get_matrix = [](buffer_map<c_float_type> M, bool col_major, int rows, int cols) -> MatrixX<double> {
+        if (col_major)
+        {
+            return Map<Matrix<c_float_type, Dynamic, Dynamic, ColMajor>>(M.data(), rows, cols).template cast<double>();
+        }
+        else
+        {
+            return Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(M.data(), rows, cols).template cast<double>();
+        }
+    };
 
-    {
-        buffer_map MA(Ad);
-        buffer_map MB(Bd);
-        buffer_map MC(C);
-
-        if (COL_MAJOR_A())
-        {
-            TA = Map<Matrix<double, Dynamic, Dynamic, ColMajor>>(MA.data(), NK, NL);
-        }
-        else
-        {
-            TA = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(MA.data(), NK, NL);
-        }
-        if (COL_MAJOR_B())
-        {
-            TB = Map<Matrix<double, Dynamic, Dynamic, ColMajor>>(MB.data(), NL, NM);
-        }
-        else
-        {
-            TB = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(MB.data(), NL, NM);
-        }
-        if (COL_MAJOR_C())
-        {
-            TC = Map<Matrix<c_float_type, Dynamic, Dynamic, ColMajor>>(MC.data(), NK, NM);
-        }
-        else
-        {
-            TC = Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(MC.data(), NK, NM);
-        }
-    }
+    MatrixX<double> TA = get_matrix(Ad, COL_MAJOR_A(), NK, NL);
+    MatrixX<double> TB = get_matrix(Bd, COL_MAJOR_B(), NL, NM);
+    MatrixX<double> TC = get_matrix(C, COL_MAJOR_C(), NK, NM);
 
     VectorX<double> rwant = TA * (TB * test_vector);
     VectorX<double> rhave = TC.template cast<double>() * test_vector;
 
-    cout << "rhave.norm()=" << rhave.norm() << ", rwant.norm()=" << rwant.norm()
-         << ", err=" << (rhave - rwant).norm() / rwant.norm() << endl;
+    cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl;
 }
 catch (std::exception& e)
 {
