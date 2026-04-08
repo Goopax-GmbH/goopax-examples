@@ -10,6 +10,7 @@
 #include <goopax_draw/types.h>
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/random.hpp>
+#include <goopax_extra/types.hpp>
 #include <random>
 
 using namespace Eigen;
@@ -23,14 +24,15 @@ PARAMOPT<unsigned int> NL("nl", 4096);
 PARAMOPT<unsigned int> NM("nm", 4096);
 
 PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
-PARAMOPT<bool> COL_MAJOR_B("col_major_b", false);
+PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
 PARAMOPT<bool> COL_MAJOR_C("col_major_c", false);
 
 template<typename ab_float_type, typename c_float_type>
 void run_with_types(goopax_device device)
+try
 {
-    cout << "\n\nUsing types T_AB=" << goopax::pretty_typename(typeid(ab_float_type))
-         << " and T_C=" << goopax::pretty_typename(typeid(c_float_type)) << endl;
+    cout << "\n\nUsing types T_AB=" << type_name(type_enum<ab_float_type>::value)
+         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
 
     // Choosing suitable matrix block sizes.
     // Larger values can improve performance, but only if there are
@@ -42,6 +44,10 @@ void run_with_types(goopax_device device)
     {
         bk = 32;
         bm = 32;
+    }
+    if (get_bits<ab_float_type>::value == 4)
+    {
+        bl = 64;
     }
 
     assert(NK % bk == 0);
@@ -57,12 +63,16 @@ void run_with_types(goopax_device device)
     }
 
     buffer<ab_float_type> A(device, NK * NL);
+    buffer<double> Ad(device, NK * NL);
     buffer<ab_float_type> B(device, NL * NM);
+    buffer<double> Bd(device, NL * NM);
     buffer<c_float_type> C(device, NK * NM);
 
-    cout << "memory requirements [MB]: " << (A.size() * sizeof(ab_float_type) >> 16) << " + "
-         << (B.size() * sizeof(ab_float_type) >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16) << " = "
-         << ((A.size() * sizeof(ab_float_type) + B.size() * sizeof(ab_float_type) + C.size() * sizeof(c_float_type))
+    cout << "memory requirements [MB]: " << (A.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + "
+         << (B.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
+         << " = "
+         << ((A.size() * get_bits<ab_float_type>::value / 8 + B.size() * get_bits<ab_float_type>::value / 8
+              + C.size() * sizeof(c_float_type))
              >> 16)
          << ", device cache: ";
     if (device.cache_size() == 0)
@@ -73,16 +83,32 @@ void run_with_types(goopax_device device)
 
     std::random_device rd;
     WELL512_data rnd(device, device.default_global_size_max(), rd());
-    kernel fill_random(device, [&rnd](resource<ab_float_type>& a) {
+    kernel fill_random(device, [&rnd](resource<ab_float_type>& a, resource<double>& ad) {
         WELL512_lib rndlib(rnd);
 
-        for_each_global(a.begin(), a.end(), [&](auto& v) {
-            v = static_cast<typename make_gpu<ab_float_type>::type>(rndlib.gaussian_distribution());
+        unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
+        gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
+            auto pd = ad.begin() + k;
+            auto p = a.begin() + k;
+            for (uint sub = 0; sub < par; ++sub)
+            {
+                if constexpr (std::is_same_v<ab_float_type, precision::tf32>)
+                {
+                    gpu_float v = rndlib.gaussian_distribution();
+                    pd[sub] = v;
+                    p[sub] = static_cast<typename make_gpu<ab_float_type>::type>(v);
+                }
+                else
+                {
+                    pd[sub] = p[sub] =
+                        static_cast<typename make_gpu<ab_float_type>::type>(rndlib.gaussian_distribution());
+                }
+            }
         });
     });
 
-    fill_random(A);
-    fill_random(B);
+    fill_random(A, Ad);
+    fill_random(B, Bd);
     C.fill(numeric_limits<c_float_type>::quiet_NaN()).wait();
 
     kernel multiply(
@@ -166,35 +192,30 @@ void run_with_types(goopax_device device)
         }
     }
 
-    using ab_float_type_use =
-        typename std::conditional<std::is_same_v<ab_float_type, Ttf32>, Tfloat, ab_float_type>::type;
-
-    MatrixX<ab_float_type_use> TA;
-    MatrixX<ab_float_type_use> TB;
+    MatrixX<double> TA;
+    MatrixX<double> TB;
     MatrixX<c_float_type> TC;
 
     {
-        buffer_map MA(A);
-        buffer_map MB(B);
+        buffer_map MA(Ad);
+        buffer_map MB(Bd);
         buffer_map MC(C);
-        auto* Af = reinterpret_cast<ab_float_type_use*>(MA.data());
-        auto* Bf = reinterpret_cast<ab_float_type_use*>(MB.data());
 
         if (COL_MAJOR_A())
         {
-            TA = Map<Matrix<ab_float_type_use, Dynamic, Dynamic, ColMajor>>(Af, NK, NL);
+            TA = Map<Matrix<double, Dynamic, Dynamic, ColMajor>>(MA.data(), NK, NL);
         }
         else
         {
-            TA = Map<Matrix<ab_float_type_use, Dynamic, Dynamic, RowMajor>>(Af, NK, NL);
+            TA = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(MA.data(), NK, NL);
         }
         if (COL_MAJOR_B())
         {
-            TB = Map<Matrix<ab_float_type_use, Dynamic, Dynamic, ColMajor>>(Bf, NL, NM);
+            TB = Map<Matrix<double, Dynamic, Dynamic, ColMajor>>(MB.data(), NL, NM);
         }
         else
         {
-            TB = Map<Matrix<ab_float_type_use, Dynamic, Dynamic, RowMajor>>(Bf, NL, NM);
+            TB = Map<Matrix<double, Dynamic, Dynamic, RowMajor>>(MB.data(), NL, NM);
         }
         if (COL_MAJOR_C())
         {
@@ -206,11 +227,15 @@ void run_with_types(goopax_device device)
         }
     }
 
-    VectorX<double> rwant = TA.template cast<double>() * (TB.template cast<double>() * test_vector);
+    VectorX<double> rwant = TA * (TB * test_vector);
     VectorX<double> rhave = TC.template cast<double>() * test_vector;
 
     cout << "rhave.norm()=" << rhave.norm() << ", rwant.norm()=" << rwant.norm()
          << ", err=" << (rhave - rwant).norm() / rwant.norm() << endl;
+}
+catch (std::exception& e)
+{
+    cout << "Got exception '" << e.what() << "'" << endl;
 }
 
 int main(int argc, char** argv)
@@ -224,7 +249,7 @@ int main(int argc, char** argv)
              << "> + matrix<T_C, " << NK() << ", " << NM() << ">" << endl;
 
         run_with_types<Tint8_t, Tint>(device);
-        run_with_types<Tuint8_t, Tint>(device);
+        run_with_types<precision::int4, Tint>(device);
         run_with_types<Thalf, Thalf>(device);
         run_with_types<Thalf, Tfloat>(device);
         run_with_types<Tbfloat16, Tfloat>(device);
