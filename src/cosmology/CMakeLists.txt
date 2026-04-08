@@ -1,7 +1,22 @@
+include(CheckCXXSourceCompiles)
+
 find_package(HDF5)
 
 
-add_sdl_main(cosmology goopax_draw)
+check_cxx_source_compiles([[
+static_assert(__cpp_concepts >= 201907);
+int main(){}
+]] HAVE_CONCEPTS)
+
+message("HAVE_CONCEPTS=${HAVE_CONCEPTS}")
+
+if (HAVE_CONCEPTS)
+  add_sdl_main(cosmology goopax_draw)
+  message("building cosmology")
+else()
+  message("not building cosmology: requires concepts")
+endif()
+
 if (TARGET cosmology)
   if (TARGET opencv AND NOT GOOPAX_DEBUG)
     target_link_libraries(cosmology opencv)
