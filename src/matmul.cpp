@@ -94,6 +94,7 @@ try
     kernel fill_random(device, [&rnd](resource<ab_float_type>& a, resource<c_float_type>& ad) {
         WELL512_lib rndlib(rnd);
 
+        // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
         unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
         gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
             auto pd = ad.begin() + k;
