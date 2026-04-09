@@ -99,7 +99,7 @@ try
         gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
             auto pd = ad.begin() + k;
             auto p = a.begin() + k;
-            for (uint sub = 0; sub < par; ++sub)
+            for (unsigned int sub = 0; sub < par; ++sub)
             {
                 if constexpr (std::is_same_v<ab_float_type, precision::tf32>)
                 {
