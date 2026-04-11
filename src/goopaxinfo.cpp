@@ -6,6 +6,7 @@
 #include <goopax>
 #include <goopax_extra/output.hpp>
 #include <goopax_extra/types.hpp>
+#include <iomanip>
 
 using namespace goopax;
 using namespace std;
@@ -64,6 +65,12 @@ int main()
                 cout << "  device " << device_i << "/" << dvec.size() << ":" << endl
                      << "    name=" << d.name() << endl
                      << "    vendor=" << d.vendor() << endl
+                     << "    uuid=";
+                for (auto& c : d.uuid())
+                {
+                    cout << hex << std::setfill('0') << std::setw(2) << (int)c << " " << std::dec;
+                }
+                cout << endl
                      << "    local_size: default=" << d.default_local_size() << ", max=" << d.max_local_size() << endl
                      << "    default global_size: " << d.default_global_size_min() << ".."
                      << d.default_global_size_max() << endl
