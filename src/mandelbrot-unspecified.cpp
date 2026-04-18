@@ -53,9 +53,10 @@ std::function<
     void(image_resource<2, Vector<Tuint8_t, 4>, true>& image, const complex<gpu_double> center, const gpu_float scale)>
 make_kernel_function(type_enum_t type)
 {
-    return [&type](image_resource<2, Vector<Tuint8_t, 4>, true>& image,
-                   const complex<gpu_double> center,
-                   const gpu_float scale) {
+    cout << "make_kernel_function. type=" << type_name(type) << endl;
+    return [type](image_resource<2, Vector<Tuint8_t, 4>, true>& image,
+                  const complex<gpu_double> center,
+                  const gpu_float scale) {
         gpu_for_global(0,
                        image.width() * image.height(),
                        [&](gpu_uint k) // Parallel loop over all image points

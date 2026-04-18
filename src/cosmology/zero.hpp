@@ -72,11 +72,11 @@ zero_initializer::operator T() const
     T ret;
     if constexpr (has_fill<T>::value)
     {
-        ret.fill(zero_initializer());
+        ret.fill(static_cast<typename T::value_type>(zero_initializer()));
     }
     else
     {
-        fill(ret, zero_initializer());
+        fill(ret, static_cast<typename T::value_type>(zero_initializer()));
     }
     return ret;
 }
