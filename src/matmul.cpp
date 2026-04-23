@@ -121,47 +121,44 @@ try
     C.fill(numeric_limits<c_float_type>::quiet_NaN()).wait();
 
     // Creating the kernel
-    kernel multiply(
-        device,
-        [bk, bl, bm, Nthreads](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
-            gpu_for_group(0, (NK / bk) * (NM / bm), [&](gpu_uint block) {
-                gpu_uint block_k = block / (NM / bm);
-                gpu_uint block_m = block % (NM / bm);
+    kernel multiply(device,
+                    [bk, bl, bm](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
+                        gpu_for_group(0, (NK / bk) * (NM / bm), [&](gpu_uint block) {
+                            gpu_uint block_k = block / (NM / bm);
+                            gpu_uint block_m = block % (NM / bm);
 
-                gpu_uint koff = block_k * bk;
-                gpu_uint moff = block_m * bm;
+                            gpu_uint koff = block_k * bk;
+                            gpu_uint moff = block_m * bm;
 
-                matrix::warp_matrix<c_float_type> mc(bk, bm, Nthreads);
-                mc.fill(static_cast<c_float_type>(0));
+                            matrix::warp_matrix<c_float_type> mc(bk, bm);
+                            mc.fill(static_cast<c_float_type>(0));
 
-                gpu_for(0, NL(), bl, [&](gpu_uint loff) {
-                    // Loading matrix tile of Matrix A.
-                    matrix::warp_matrix<ab_float_type> ma(bk,
-                                                          bl,
-                                                          Nthreads,
-                                                          A.begin()
-                                                              + (COL_MAJOR_A ? koff + loff * NK() : koff * NL() + loff),
-                                                          COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                                                          COL_MAJOR_A() ? NK() : NL());
+                            gpu_for(0, NL(), bl, [&](gpu_uint loff) {
+                                // Loading matrix tile of Matrix A.
+                                matrix::warp_matrix<ab_float_type> ma(
+                                    bk,
+                                    bl,
+                                    A.begin() + (COL_MAJOR_A ? koff + loff * NK() : koff * NL() + loff),
+                                    COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
+                                    COL_MAJOR_A() ? NK() : NL());
 
-                    // Loading matrix tile of Matrix B.
-                    matrix::warp_matrix<ab_float_type> mb(bl,
-                                                          bm,
-                                                          Nthreads,
-                                                          B.begin()
-                                                              + (COL_MAJOR_B ? loff + moff * NL() : loff * NM() + moff),
-                                                          COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
-                                                          COL_MAJOR_B() ? NL() : NM());
+                                // Loading matrix tile of Matrix B.
+                                matrix::warp_matrix<ab_float_type> mb(
+                                    bl,
+                                    bm,
+                                    B.begin() + (COL_MAJOR_B ? loff + moff * NL() : loff * NM() + moff),
+                                    COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
+                                    COL_MAJOR_B() ? NL() : NM());
 
-                    // Multiplying matrix tiles, adding the result.
-                    mc += ma * mb;
-                });
+                                // Multiplying matrix tiles, adding the result.
+                                mc += ma * mb;
+                            });
 
-                mc.store(C.begin() + (COL_MAJOR_C ? koff + moff * NK() : koff * NM() + moff),
-                         COL_MAJOR_C() ? matrix::col_major : matrix::row_major,
-                         COL_MAJOR_C() ? NK() : NM());
-            });
-        });
+                            mc.store(C.begin() + (COL_MAJOR_C ? koff + moff * NK() : koff * NM() + moff),
+                                     COL_MAJOR_C() ? matrix::col_major : matrix::row_major,
+                                     COL_MAJOR_C() ? NK() : NM());
+                        });
+                    });
 
     for (unsigned int count = 0; count < 3; ++count)
     {
