@@ -99,7 +99,7 @@ ExternalProject_Add(
   "-DWITH_FFMPEG=0"
   "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/opencv"
 )
-if (NOT OpenCV_FOUND)
+if (NOT OpenCV_FOUND AND NOT ${WITH_CUDA})
   add_dependencies(build_external_libraries build_opencv)
 endif()
 
