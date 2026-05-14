@@ -19,9 +19,9 @@ using namespace goopax;
 using namespace std;
 
 // Matrix sizes. Can be specified as command line arguments. See matmul --help
-PARAMOPT<unsigned int> NK("nk", 4096);
-PARAMOPT<unsigned int> NL("nl", 4096);
-PARAMOPT<unsigned int> NM("nm", 4096);
+PARAMOPT<unsigned int> M("m", 4096);
+PARAMOPT<unsigned int> N("n", 4096);
+PARAMOPT<unsigned int> K("k", 4096);
 
 PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
@@ -37,39 +37,33 @@ try
     // Choosing suitable matrix block sizes.
     // Larger values can improve performance, but only if there are
     // enough registers available.
-    unsigned int bk = 64;
-    unsigned int bl = 16;
     unsigned int bm = 64;
+    unsigned int bn = 64;
+    unsigned int bk = 16;
     if (device.max_registers() < 80)
     {
-        bk = 32;
         bm = 32;
+        bn = 32;
     }
     if (get_bits<ab_float_type>::value == 4)
     {
-        bl = 64;
+        bk = 64;
     }
 
-    assert(NK % bk == 0);
-    assert(NL % bl == 0);
-    assert(NM % bm == 0);
+    assert(M % bm == 0);
+    assert(N % bn == 0);
+    assert(K % bk == 0);
 
     unsigned int Nthreads = device.default_local_size();
 
-    if (!device.support_warp_matrix<ab_float_type, c_float_type>(bk, bm, bl, Nthreads))
-    {
-        cout << "Not supported" << endl;
-        return;
-    }
-
     // Matrix buffers
-    buffer<ab_float_type> A(device, NK * NL);
-    buffer<ab_float_type> B(device, NL * NM);
-    buffer<c_float_type> C(device, NK * NM);
+    buffer<ab_float_type> A(device, M * K);
+    buffer<ab_float_type> B(device, K * N);
+    buffer<c_float_type> C(device, M * N);
 
     // Matrix buffers for verification
-    buffer<c_float_type> Ad(device, NK * NL);
-    buffer<c_float_type> Bd(device, NL * NM);
+    buffer<c_float_type> Ad(device, M * K);
+    buffer<c_float_type> Bd(device, K * N);
 
     cout << "Memory requirements [MB]: " << (A.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + "
          << (B.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
@@ -83,9 +77,9 @@ try
     else
         cout << (device.cache_size() >> 16);
     cout << "\nRegisters required: "
-         << bk * bl * get_bits<ab_float_type>::value / Nthreads / 32
-                + bl * bm * get_bits<ab_float_type>::value / Nthreads / 32
-                + bk * bm * get_bits<c_float_type>::value / Nthreads / 32
+         << bm * bk * get_bits<ab_float_type>::value / Nthreads / 32
+                + bk * bn * get_bits<ab_float_type>::value / Nthreads / 32
+                + bm * bn * get_bits<c_float_type>::value / Nthreads / 32
          << " / " << device.max_registers() << endl;
 
     // Filling with random numbers
@@ -122,41 +116,41 @@ try
 
     // Creating the kernel
     kernel multiply(device,
-                    [bk, bl, bm](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
-                        gpu_for_group(0, (NK / bk) * (NM / bm), [&](gpu_uint block) {
-                            gpu_uint block_k = block / (NM / bm);
-                            gpu_uint block_m = block % (NM / bm);
+                    [bm, bn, bk](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
+                        gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
+                            gpu_uint block_m = block / (N / bn);
+                            gpu_uint block_n = block % (N / bn);
 
-                            gpu_uint koff = block_k * bk;
                             gpu_uint moff = block_m * bm;
+                            gpu_uint noff = block_n * bn;
 
-                            matrix::warp_matrix<c_float_type> mc(bk, bm);
+                            matrix::warp_matrix<c_float_type> mc(bm, bn);
                             mc.fill(static_cast<c_float_type>(0));
 
-                            gpu_for(0, NL(), bl, [&](gpu_uint loff) {
+                            gpu_for(0, K(), bk, [&](gpu_uint koff) {
                                 // Loading matrix tile of Matrix A.
                                 matrix::warp_matrix<ab_float_type> ma(
+                                    bm,
                                     bk,
-                                    bl,
-                                    A.begin() + (COL_MAJOR_A ? koff + loff * NK() : koff * NL() + loff),
+                                    A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
                                     COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                                    COL_MAJOR_A() ? NK() : NL());
+                                    COL_MAJOR_A() ? M() : K());
 
                                 // Loading matrix tile of Matrix B.
                                 matrix::warp_matrix<ab_float_type> mb(
-                                    bl,
-                                    bm,
-                                    B.begin() + (COL_MAJOR_B ? loff + moff * NL() : loff * NM() + moff),
+                                    bk,
+                                    bn,
+                                    B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
                                     COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
-                                    COL_MAJOR_B() ? NL() : NM());
+                                    COL_MAJOR_B() ? K() : N());
 
                                 // Multiplying matrix tiles, adding the result.
                                 mc += ma * mb;
                             });
 
-                            mc.store(C.begin() + (COL_MAJOR_C ? koff + moff * NK() : koff * NM() + moff),
+                            mc.store(C.begin() + (COL_MAJOR_C ? moff + noff * M() : moff * N() + noff),
                                      COL_MAJOR_C() ? matrix::col_major : matrix::row_major,
-                                     COL_MAJOR_C() ? NK() : NM());
+                                     COL_MAJOR_C() ? M() : N());
                         });
                     });
 
@@ -167,7 +161,7 @@ try
         auto time_end = steady_clock::now();
 
         Tdouble time = duration_cast<duration<double>>(time_end - time_start).count();
-        auto OPS = Tdouble(NK()) * NL() * NM() * 2 / time;
+        auto OPS = Tdouble(M()) * K() * N() * 2 / time;
         cout << "Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS" << endl;
     }
     cout << "verifying... " << flush;
@@ -176,7 +170,7 @@ try
     {
         std::default_random_engine generator;
         std::normal_distribution<double> distribution;
-        test_vector = VectorX<double>(NM());
+        test_vector = VectorX<double>(N());
         for (double& e : test_vector)
         {
             e = distribution(generator);
@@ -194,9 +188,9 @@ try
         }
     };
 
-    MatrixX<double> TA = get_matrix(Ad, COL_MAJOR_A(), NK, NL);
-    MatrixX<double> TB = get_matrix(Bd, COL_MAJOR_B(), NL, NM);
-    MatrixX<double> TC = get_matrix(C, COL_MAJOR_C(), NK, NM);
+    MatrixX<double> TA = get_matrix(Ad, COL_MAJOR_A(), M, K);
+    MatrixX<double> TB = get_matrix(Bd, COL_MAJOR_B(), K, N);
+    MatrixX<double> TC = get_matrix(C, COL_MAJOR_C(), M, N);
 
     VectorX<double> rwant = TA * (TB * test_vector);
     VectorX<double> rhave = TC.template cast<double>() * test_vector;
@@ -215,8 +209,8 @@ int main(int argc, char** argv)
     for (auto device : devices(GOOPAX_DEBUG ? env_CPU : env_GPU))
     {
         cout << "running on device " << device.name() << ", env=" << device.get_envmode() << endl;
-        cout << "matrix sizes: matrix<T_AB, " << NK() << ", " << NL() << "> * matrix<T_AB, " << NL() << ", " << NM()
-             << "> + matrix<T_C, " << NK() << ", " << NM() << ">" << endl;
+        cout << "matrix sizes: matrix<T_AB, " << M() << ", " << K() << "> * matrix<T_AB, " << K() << ", " << N()
+             << "> + matrix<T_C, " << M() << ", " << N() << ">" << endl;
 
         run_with_types<Tint8_t, Tint>(device);
         run_with_types<precision::int4, Tint>(device);
