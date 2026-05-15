@@ -23,9 +23,9 @@ PARAMOPT<unsigned int> M("m", 4096);
 PARAMOPT<unsigned int> N("n", 4096);
 PARAMOPT<unsigned int> K("k", 4096);
 
-PARAMOPT<unsigned int> BM("bm", 64);
-PARAMOPT<unsigned int> BN("bn", 64);
-PARAMOPT<unsigned int> BK("bk", 16);
+PARAMOPT<unsigned int> BM("bm", 0);
+PARAMOPT<unsigned int> BN("bn", 0);
+PARAMOPT<unsigned int> BK("bk", 0);
 
 PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
@@ -106,13 +106,26 @@ struct workgroup_matrix_ab
             swap(rows_use, cols_use);
         }
 
-        using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
+        using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
+        using value_type_use = typename std::conditional<(get_bits<value_type_orig>::value < 32),
+							 int, value_type_orig>::type;
+
+        using P_use_src =
+            typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
+        using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
+
+        P_use_src ptr_use = reinterpret<P_use_src>(ptr);
+        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
+        pitch /= size_factor;
+        cols_use /= size_factor;
+
+	P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
 
         gpu_for_local(0,
                       rows_use * cols_use,
                       par_unroll(std::min(rows * cols / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type>::value))),
-                      [&](gpu_uint k) { storage[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
+                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                      [&](gpu_uint k) { ptr_dest[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
     }
 
     template<typename P>
@@ -134,14 +147,30 @@ struct workgroup_matrix_ab
         {
             swap(rows_use, cols_use);
         }
-        using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
+
+        using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
+        using value_type_use = typename std::conditional<(get_bits<value_type_orig>::value < 32),
+							 int, value_type_orig>::type;
+
+        using P_use_src =
+            typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
+        using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
+
+        P_use_src ptr_use = reinterpret<P_use_src>(ptr);
+        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
+        pitch /= size_factor;
+        cols_use /= size_factor;
+
+	P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
+	
+        //using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
 
         gpu_for_local(0,
                       rows_use * cols_use,
-                      par_unroll(std::min(rows * cols / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type>::value))),
+                      par_unroll(std::min(rows_use * cols_use / local_size(),
+                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
                       [&](gpu_uint k) {
-                          async_copy(ptr + k + k / cols_use * (pitch - cols_use), storage.begin() + k);
+			async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
                           // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
                       });
     }
@@ -288,14 +317,38 @@ try
         bm = 32;
         bn = 32;
     }
-    if (get_bits<ab_float_type>::value == 4)
+    if (get_bits<ab_float_type>::value == 8)
     {
         bk = 64;
     }
+    if (get_bits<ab_float_type>::value == 4)
+    {
+      if (goopax_is_integral<ab_float_type>::value)
+	{
+	  bk = 64;
+	  bm = 64;
+	  bn = 32;
+	}
+      else
+	{
+	  bk = 64;
+	  bm = 64;
+	  bn = 64;
+	}
+    }
 
-    bm = BM();
-    bn = BN();
-    bk = BK();
+    if (BM())
+      {
+	bm = BM();
+      }
+    if (BN())
+      {
+	bn = BN();
+      }
+    if (BK())
+      {
+	bk = BK();
+      }
 
     assert(M % bm == 0);
     assert(N % bn == 0);
@@ -411,6 +464,8 @@ try
                             {
                                 // gpu_if(elect().first)
                                 //{
+
+			      
                                 bulk_copy(
                                     B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
                                     B.begin()
@@ -530,7 +585,18 @@ try
                         }
 
                         // Multiplying matrix tiles, adding the result.
-                        mc += ma * mb;
+			if constexpr(is_same_v<ab_float_type, precision::fp4e2m1>)
+			  {
+			    matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols/32);
+			    matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows/32, mb.cols);
+			    scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+			    scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+			    mc = multiply_add(ma, mb, mc, scale_a, scale_b);
+			  }
+			else
+			  {
+			    mc += ma * mb;
+			  }
                     });
 
                     mc.store(C.begin() + (COL_MAJOR_C ? moff + noff * M() : moff * N() + noff),
@@ -608,26 +674,22 @@ int main(int argc, char** argv)
         cout << "matrix sizes: matrix<T_AB, " << M() << ", " << K() << "> * matrix<T_AB, " << K() << ", " << N()
              << "> + matrix<T_C, " << M() << ", " << N() << ">" << endl;
 
-        run_with_types<Thalf, Tfloat>(device);
+        //run_with_types<Thalf, Tfloat>(device);
         // run_with_types<Tdouble, Tdouble>(device);
-        /*
+	    
+	    run_with_types<Tdouble, Tdouble>(device);
+
             run_with_types<Tint8_t, Tint>(device);
           run_with_types<precision::int4, Tint>(device);
             run_with_types<Thalf, Thalf>(device);
             run_with_types<Thalf, Tfloat>(device);
             run_with_types<Tbfloat16, Tfloat>(device);
             run_with_types<Tfloat, Tfloat>(device);
+            run_with_types<precision::fp8e4m3, Tfloat>(device);
+            run_with_types<precision::fp4e2m1, Tfloat>(device);
+	    
+	    run_with_types<Ttf32, Tfloat>(device);
 
-            if (device.support_type(Ttf32()))
-            {
-                run_with_types<Ttf32, Tfloat>(device);
-            }
-            if (device.support_type(Tdouble()))
-            {
-                run_with_types<Tdouble, Tdouble>(device);
-            }
-        */
-
-        cout << endl << endl;
+	    cout << endl << endl;
     }
 }
