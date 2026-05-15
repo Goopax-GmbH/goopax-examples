@@ -107,8 +107,8 @@ struct workgroup_matrix_ab
         }
 
         using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
-        using value_type_use = typename std::conditional<(get_bits<value_type_orig>::value < 32),
-							 int, value_type_orig>::type;
+        using value_type_use =
+            typename std::conditional<(get_bits<value_type_orig>::value < 32), int, value_type_orig>::type;
 
         using P_use_src =
             typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
@@ -119,7 +119,7 @@ struct workgroup_matrix_ab
         pitch /= size_factor;
         cols_use /= size_factor;
 
-	P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
+        P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
 
         gpu_for_local(0,
                       rows_use * cols_use,
@@ -149,8 +149,8 @@ struct workgroup_matrix_ab
         }
 
         using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
-        using value_type_use = typename std::conditional<(get_bits<value_type_orig>::value < 32),
-							 int, value_type_orig>::type;
+        using value_type_use =
+            typename std::conditional<(get_bits<value_type_orig>::value < 32), int, value_type_orig>::type;
 
         using P_use_src =
             typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
@@ -161,16 +161,16 @@ struct workgroup_matrix_ab
         pitch /= size_factor;
         cols_use /= size_factor;
 
-	P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
-	
-        //using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
+        P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
+
+        // using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
 
         gpu_for_local(0,
                       rows_use * cols_use,
                       par_unroll(std::min(rows_use * cols_use / local_size(),
                                           static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
                       [&](gpu_uint k) {
-			async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
+                          async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
                           // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
                       });
     }
@@ -220,7 +220,7 @@ struct workgroup_matrix_c
         // gpu_cout << "thread=" << global_id() << ". loading a from storage.begin() + " << br*(rows/brows)*ab.a.cols
         //<< " and b from storage.begin() + " << bc*(cols/bcols)*ab.a.rows << "\n";
         warp_matrix<T_A> a(rows / brows, ab.a.cols, ab.a.storage.begin() + br * (rows / brows) * ab.a.cols, row_major);
-        warp_matrix<T_A> b(ab.a.cols, cols / bcols, ab.b.storage.begin() + bc * (cols / bcols) * ab.b.rows, col_major);
+        warp_matrix<T_B> b(ab.a.cols, cols / bcols, ab.b.storage.begin() + bc * (cols / bcols) * ab.b.rows, col_major);
         multiply_add(a, b, tile);
         // gpu_cout << "  operator+=. before: tile=" << tile.coeffs();
         tile += a * b;
@@ -299,99 +299,21 @@ workgroup_matrix_product<T_A, T_B> operator*(const workgroup_matrix_ab<T_A>& a, 
 
 }
 
-template<typename ab_float_type, typename c_float_type>
-void run_with_types(goopax_device device)
-try
+template<typename a_float_type, typename c_float_type>
+void fill_random(WELL512_data& rnd,
+                 buffer<a_float_type>& a,
+                 buffer<c_float_type>& ad,
+                 unsigned int brows,
+                 unsigned int bcols,
+                 unsigned int cols)
 {
-    cout << "\n\nUsing types T_AB=" << type_name(type_enum<ab_float_type>::value)
-         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
-
-    // Choosing suitable matrix block sizes.
-    // Larger values can improve performance, but only if there are
-    // enough registers available.
-    unsigned int bm = 64;
-    unsigned int bn = 64;
-    unsigned int bk = 16;
-    if (device.max_registers() < 80)
-    {
-        bm = 32;
-        bn = 32;
-    }
-    if (get_bits<ab_float_type>::value == 8)
-    {
-        bk = 64;
-    }
-    if (get_bits<ab_float_type>::value == 4)
-    {
-      if (goopax_is_integral<ab_float_type>::value)
-	{
-	  bk = 64;
-	  bm = 64;
-	  bn = 32;
-	}
-      else
-	{
-	  bk = 64;
-	  bm = 64;
-	  bn = 64;
-	}
-    }
-
-    if (BM())
-      {
-	bm = BM();
-      }
-    if (BN())
-      {
-	bn = BN();
-      }
-    if (BK())
-      {
-	bk = BK();
-      }
-
-    assert(M % bm == 0);
-    assert(N % bn == 0);
-    assert(K % bk == 0);
-
-    unsigned int Nthreads = device.default_local_size();
-
-    // Matrix buffers
-    buffer<ab_float_type> A(device, M * K);
-    buffer<ab_float_type> B(device, K * N);
-    buffer<c_float_type> C(device, M * N);
-
-    // Matrix buffers for verification
-    buffer<c_float_type> Ad(device, M * K);
-    buffer<c_float_type> Bd(device, K * N);
-
-    cout << "Memory requirements [MB]: " << (A.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + "
-         << (B.size() * get_bits<ab_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
-         << " = "
-         << ((A.size() * get_bits<ab_float_type>::value / 8 + B.size() * get_bits<ab_float_type>::value / 8
-              + C.size() * sizeof(c_float_type))
-             >> 16)
-         << ", device cache: ";
-    if (device.cache_size() == 0)
-        cout << "unknown";
-    else
-        cout << (device.cache_size() >> 16);
-    cout << "\nRegisters required: "
-         << bm * bk * get_bits<ab_float_type>::value / Nthreads / 32
-                + bk * bn * get_bits<ab_float_type>::value / Nthreads / 32
-                + bm * bn * get_bits<c_float_type>::value / Nthreads / 32
-         << " / " << device.max_registers() << endl;
-
-    // Filling with random numbers
-    std::random_device rd;
-    WELL512_data rnd(device, device.default_global_size_max(), rd());
     kernel fill_random(
-        device,
-        [&rnd](resource<ab_float_type>& a, resource<c_float_type>& ad, gpu_uint brows, gpu_uint bcols, gpu_uint cols) {
+        a.get_device(),
+        [&rnd](resource<a_float_type>& a, resource<c_float_type>& ad, gpu_uint brows, gpu_uint bcols, gpu_uint cols) {
             WELL512_lib rndlib(rnd);
 
             // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
-            unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
+            unsigned int par = max(32u / static_cast<unsigned int>(get_bits<a_float_type>::value), 1u);
             gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
                 auto pd = ad.begin() + k;
                 auto p = a.begin() + k;
@@ -406,27 +328,117 @@ try
 
                 for (unsigned int sub = 0; sub < par; ++sub)
                 {
-                    if constexpr (std::is_same_v<typename make_cpu<ab_float_type>::type, precision::tf32>)
+                    if constexpr (std::is_same_v<typename make_cpu<a_float_type>::type, precision::tf32>)
                     {
                         gpu_float v = rndlib.gaussian_distribution();
                         pd[sub] = v;
-                        p[sub] = static_cast<typename make_gpu<ab_float_type>::type>(v);
+                        p[sub] = static_cast<typename make_gpu<a_float_type>::type>(v);
                     }
                     else
                     {
                         pd[sub] = p[sub] =
-                            static_cast<typename make_gpu<ab_float_type>::type>(rndlib.gaussian_distribution());
+                            static_cast<typename make_gpu<a_float_type>::type>(rndlib.gaussian_distribution());
                     }
                 }
             });
         });
+    fill_random(a, ad, brows, bcols, cols);
+}
 
-    fill_random(A, Ad, bm, bk, K);
-    fill_random(B, Bd, bn, bk, K);
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+void run_with_types(goopax_device device)
+try
+{
+    cout << "\n\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
+         << ", T_B=" << type_name(type_enum<b_float_type>::value)
+         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
+
+    // Choosing suitable matrix block sizes.
+    // Larger values can improve performance, but only if there are
+    // enough registers available.
+    unsigned int bm = 64;
+    unsigned int bn = 64;
+    unsigned int bk = 16;
+    if (device.max_registers() < 80)
+    {
+        bm = 32;
+        bn = 32;
+    }
+    if (get_bits<a_float_type>::value == 8)
+    {
+        bk = 64;
+    }
+    if (get_bits<a_float_type>::value == 4)
+    {
+        if (goopax_is_integral<a_float_type>::value)
+        {
+            bk = 64;
+            bm = 64;
+            bn = 32;
+        }
+        else
+        {
+            bk = 64;
+            bm = 64;
+            bn = 64;
+        }
+    }
+
+    if (BM())
+    {
+        bm = BM();
+    }
+    if (BN())
+    {
+        bn = BN();
+    }
+    if (BK())
+    {
+        bk = BK();
+    }
+
+    assert(M % bm == 0);
+    assert(N % bn == 0);
+    assert(K % bk == 0);
+
+    unsigned int Nthreads = device.default_local_size();
+
+    // Matrix buffers
+    buffer<a_float_type> A(device, M * K);
+    buffer<b_float_type> B(device, K * N);
+    buffer<c_float_type> C(device, M * N);
+
+    // Matrix buffers for verification
+    buffer<c_float_type> Ad(device, M * K);
+    buffer<c_float_type> Bd(device, K * N);
+
+    cout << "Memory requirements [MB]: " << (A.size() * get_bits<a_float_type>::value / 8 >> 16) << " + "
+         << (B.size() * get_bits<b_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
+         << " = "
+         << ((A.size() * get_bits<a_float_type>::value / 8 + B.size() * get_bits<b_float_type>::value / 8
+              + C.size() * sizeof(c_float_type))
+             >> 16)
+         << ", device cache: ";
+    if (device.cache_size() == 0)
+        cout << "unknown";
+    else
+        cout << (device.cache_size() >> 16);
+    cout << "\nRegisters required: "
+         << bm * bk * get_bits<a_float_type>::value / Nthreads / 32
+                + bk * bn * get_bits<b_float_type>::value / Nthreads / 32
+                + bm * bn * get_bits<c_float_type>::value / Nthreads / 32
+         << " / " << device.max_registers() << endl;
+
+    // Filling with random numbers
+    std::random_device rd;
+    WELL512_data rnd(device, device.default_global_size_max(), rd());
+
+    fill_random(rnd, A, Ad, bm, bk, K);
+    fill_random(rnd, B, Bd, bn, bk, K);
     C.fill(numeric_limits<c_float_type>::quiet_NaN());
 
     // Creating the kernel
-    kernel<void(buffer<ab_float_type> & A, buffer<ab_float_type> & B, buffer<c_float_type> & C)> multiply;
+    kernel<void(buffer<a_float_type> & A, buffer<b_float_type> & B, buffer<c_float_type> & C)> multiply;
 
     if (USE_LOCAL_SIZE != 0)
     {
@@ -434,7 +446,7 @@ try
 
         multiply.assign(
             device,
-            [bm, bn, bk](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
+            [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
                 mbarrier mbar(2);
                 gpu_uint count = 0;
 
@@ -455,8 +467,8 @@ try
 
                         local_barrier(memory::threadgroup);
 
-                        matrix::workgroup_matrix_ab<ab_float_type> ma(bm, bk);
-                        matrix::workgroup_matrix_ab<ab_float_type> mb(bk, bn);
+                        matrix::workgroup_matrix_ab<a_float_type> ma(bm, bk);
+                        matrix::workgroup_matrix_ab<b_float_type> mb(bk, bn);
 
                         if (USE_BULK())
                         {
@@ -465,7 +477,6 @@ try
                                 // gpu_if(elect().first)
                                 //{
 
-			      
                                 bulk_copy(
                                     B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
                                     B.begin()
@@ -547,7 +558,7 @@ try
     else
     {
         multiply.assign(
-            device, [bm, bn, bk](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
+            device, [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
                     gpu_uint block_m = block / (N / bn);
                     gpu_uint block_n = block % (N / bn);
@@ -560,8 +571,8 @@ try
 
                     gpu_for(0, K(), bk, [&](gpu_uint koff) {
                         // Loading matrix tile of Matrix A.
-                        matrix::warp_matrix<ab_float_type> ma(bm, bk);
-                        matrix::warp_matrix<ab_float_type> mb(bk, bn);
+                        matrix::warp_matrix<a_float_type> ma(bm, bk);
+                        matrix::warp_matrix<b_float_type> mb(bk, bn);
 
                         if (REARRANGE)
                         {
@@ -585,18 +596,18 @@ try
                         }
 
                         // Multiplying matrix tiles, adding the result.
-			if constexpr(is_same_v<ab_float_type, precision::fp4e2m1>)
-			  {
-			    matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols/32);
-			    matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows/32, mb.cols);
-			    scale_a.fill(static_cast<precision::fp8ue8m0>(1));
-			    scale_b.fill(static_cast<precision::fp8ue8m0>(1));
-			    mc = multiply_add(ma, mb, mc, scale_a, scale_b);
-			  }
-			else
-			  {
-			    mc += ma * mb;
-			  }
+                        if constexpr (is_same_v<a_float_type, precision::fp4e2m1>)
+                        {
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
+                            scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+                            scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+                            mc = multiply_add(ma, mb, mc, scale_a, scale_b);
+                        }
+                        else
+                        {
+                            mc += ma * mb;
+                        }
                     });
 
                     mc.store(C.begin() + (COL_MAJOR_C ? moff + noff * M() : moff * N() + noff),
@@ -671,25 +682,22 @@ int main(int argc, char** argv)
     for (auto device : devices(GOOPAX_DEBUG ? env_CPU : env_GPU))
     {
         cout << "running on device " << device.name() << ", env=" << device.get_envmode() << endl;
-        cout << "matrix sizes: matrix<T_AB, " << M() << ", " << K() << "> * matrix<T_AB, " << K() << ", " << N()
+        cout << "matrix sizes: matrix<T_A, " << M() << ", " << K() << "> * matrix<T_B, " << K() << ", " << N()
              << "> + matrix<T_C, " << M() << ", " << N() << ">" << endl;
 
-        //run_with_types<Thalf, Tfloat>(device);
-        // run_with_types<Tdouble, Tdouble>(device);
-	    
-	    run_with_types<Tdouble, Tdouble>(device);
+        run_with_types<Thalf, Thalf, Thalf>(device);
+        run_with_types<Thalf, Thalf, Tfloat>(device);
+        run_with_types<Tbfloat16, Tbfloat16, Tfloat>(device);
+        // run_with_types<Tfloat, Tfloat, Tfloat>(device);
+        run_with_types<precision::fp8e4m3, precision::fp8e5m2, Tfloat>(device);
+        run_with_types<precision::fp8e3m2, precision::fp8e2m3, Tfloat>(device);
+        run_with_types<precision::fp8e2m1, precision::fp8e2m1, Tfloat>(device);
+        run_with_types<precision::fp4e2m1, precision::fp4e2m1, Tfloat>(device);
+        run_with_types<Ttf32, Ttf32, Tfloat>(device);
+        run_with_types<Tint8_t, Tint8_t, Tint>(device);
+        run_with_types<precision::int4, precision::int4, Tint>(device);
+        run_with_types<Tdouble, Tdouble, Tdouble>(device);
 
-            run_with_types<Tint8_t, Tint>(device);
-          run_with_types<precision::int4, Tint>(device);
-            run_with_types<Thalf, Thalf>(device);
-            run_with_types<Thalf, Tfloat>(device);
-            run_with_types<Tbfloat16, Tfloat>(device);
-            run_with_types<Tfloat, Tfloat>(device);
-            run_with_types<precision::fp8e4m3, Tfloat>(device);
-            run_with_types<precision::fp4e2m1, Tfloat>(device);
-	    
-	    run_with_types<Ttf32, Tfloat>(device);
-
-	    cout << endl << endl;
+        cout << endl << endl;
     }
 }
