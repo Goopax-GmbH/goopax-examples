@@ -31,6 +31,9 @@ PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
 PARAMOPT<bool> COL_MAJOR_C("col_major_c", false);
 
+PARAMOPT<bool> REARRANGE("rearrange", true);
+PARAMOPT<bool> USE_BULK("use_bulk", false);
+
 /*
   static_assert(goopax_is_pointer<gpu_type<int*>>::value);
 static_assert(goopax_is_pointer<gpu_type<goopax::cpu_pointer<signed char, memory::threadgroup>>>::value);
@@ -78,6 +81,18 @@ struct workgroup_matrix_ab
 
     local_mem<T> storage;
 
+    unsigned int default_pitch(layout_t layout) const
+    {
+        return (layout == col_major ? rows : cols);
+    }
+
+    template<typename P>
+        requires pointer_valid<P>
+    void load(P ptr, layout_t layout)
+    {
+        load(ptr, layout, default_pitch(layout));
+    }
+
     template<typename P>
         requires pointer_valid<P>
     void load(P ptr, layout_t layout, gpu_uint pitch)
@@ -91,24 +106,20 @@ struct workgroup_matrix_ab
             swap(rows_use, cols_use);
         }
 
-        using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
-        using value_type_use = value_type_orig; // typename std::conditional<(get_bits<value_type_orig>::value < 32),
-                                                // int, value_type_orig>::type;
-
-        using P_use_src =
-            typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
-        using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
-
-        P_use_src ptr_use = reinterpret<P_use_src>(ptr);
-        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
-        pitch /= size_factor;
-        cols_use /= size_factor;
+        using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
 
         gpu_for_local(0,
                       rows_use * cols_use,
                       par_unroll(std::min(rows * cols / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_orig>::value))),
-                      [&](gpu_uint k) { storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)]; });
+                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type>::value))),
+                      [&](gpu_uint k) { storage[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
+    }
+
+    template<typename P>
+        requires pointer_valid<P>
+    void load_async(P ptr, layout_t layout)
+    {
+        load_async(ptr, layout, default_pitch(layout));
     }
 
     template<typename P>
@@ -123,26 +134,14 @@ struct workgroup_matrix_ab
         {
             swap(rows_use, cols_use);
         }
-
-        using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
-        using value_type_use = value_type_orig; // typename std::conditional<(get_bits<value_type_orig>::value < 32),
-                                                // int, value_type_orig>::type;
-
-        using P_use_src =
-            typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
-        using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
-
-        P_use_src ptr_use = reinterpret<P_use_src>(ptr);
-        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
-        pitch /= size_factor;
-        cols_use /= size_factor;
+        using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
 
         gpu_for_local(0,
                       rows_use * cols_use,
                       par_unroll(std::min(rows * cols / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_orig>::value))),
+                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type>::value))),
                       [&](gpu_uint k) {
-                          async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), storage.begin() + k);
+                          async_copy(ptr + k + k / cols_use * (pitch - cols_use), storage.begin() + k);
                           // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
                       });
     }
@@ -333,33 +332,44 @@ try
     // Filling with random numbers
     std::random_device rd;
     WELL512_data rnd(device, device.default_global_size_max(), rd());
-    kernel fill_random(device, [&rnd](resource<ab_float_type>& a, resource<c_float_type>& ad) {
-        WELL512_lib rndlib(rnd);
+    kernel fill_random(
+        device,
+        [&rnd](resource<ab_float_type>& a, resource<c_float_type>& ad, gpu_uint brows, gpu_uint bcols, gpu_uint cols) {
+            WELL512_lib rndlib(rnd);
 
-        // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
-        unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
-        gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
-            auto pd = ad.begin() + k;
-            auto p = a.begin() + k;
-            for (unsigned int sub = 0; sub < par; ++sub)
-            {
-                if constexpr (std::is_same_v<typename make_cpu<ab_float_type>::type, precision::tf32>)
+            // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
+            unsigned int par = max(32u / static_cast<unsigned int>(get_bits<ab_float_type>::value), 1u);
+            gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
+                auto pd = ad.begin() + k;
+                auto p = a.begin() + k;
+
+                if (REARRANGE)
                 {
-                    gpu_float v = rndlib.gaussian_distribution();
-                    pd[sub] = v;
-                    p[sub] = static_cast<typename make_gpu<ab_float_type>::type>(v);
+                    gpu_uint row = k / cols;
+                    gpu_uint col = k % cols;
+                    p = a.begin() + col / bcols * brows * bcols + col % bcols + row % brows * bcols
+                        + row / brows * brows * cols;
                 }
-                else
+
+                for (unsigned int sub = 0; sub < par; ++sub)
                 {
-                    pd[sub] = p[sub] =
-                        static_cast<typename make_gpu<ab_float_type>::type>(rndlib.gaussian_distribution());
+                    if constexpr (std::is_same_v<typename make_cpu<ab_float_type>::type, precision::tf32>)
+                    {
+                        gpu_float v = rndlib.gaussian_distribution();
+                        pd[sub] = v;
+                        p[sub] = static_cast<typename make_gpu<ab_float_type>::type>(v);
+                    }
+                    else
+                    {
+                        pd[sub] = p[sub] =
+                            static_cast<typename make_gpu<ab_float_type>::type>(rndlib.gaussian_distribution());
+                    }
                 }
-            }
+            });
         });
-    });
 
-    fill_random(A, Ad);
-    fill_random(B, Bd);
+    fill_random(A, Ad, bm, bk, K);
+    fill_random(B, Bd, bn, bk, K);
     C.fill(numeric_limits<c_float_type>::quiet_NaN());
 
     // Creating the kernel
@@ -372,6 +382,9 @@ try
         multiply.assign(
             device,
             [bm, bn, bk](resource<ab_float_type>& A, resource<ab_float_type>& B, resource<c_float_type>& C) {
+                mbarrier mbar(2);
+                gpu_uint count = 0;
+
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
                     gpu_uint block_m = block / (N / bn);
                     gpu_uint block_n = block % (N / bn);
@@ -382,40 +395,89 @@ try
                     matrix::workgroup_matrix_c<c_float_type> mc(bm, bn);
                     mc.fill(static_cast<c_float_type>(0));
 
-                    gpu_for(0, K(), bk, [&](gpu_uint koff) {
+                    gpu_for(0, (K / bk), [&](gpu_uint block_k) {
+                        gpu_uint koff = block_k * bk;
+
                         // Loading matrix tile of Matrix A.
 
                         local_barrier(memory::threadgroup);
 
                         matrix::workgroup_matrix_ab<ab_float_type> ma(bm, bk);
+                        matrix::workgroup_matrix_ab<ab_float_type> mb(bk, bn);
 
-                        if (false)
+                        if (USE_BULK())
                         {
-                            ma.load_async(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-                                          COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                                          COL_MAJOR_A() ? M() : K());
+                            gpu_if(local_id() == 0)
+                            {
+                                // gpu_if(elect().first)
+                                //{
+                                bulk_copy(
+                                    B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
+                                    B.begin()
+                                        + ((COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk) + bk * bn),
+                                    mb.storage.begin(),
+                                    mbar);
+                                bulk_copy(
+                                    A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
+                                    A.begin()
+                                        + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm + bm * bk),
+                                    ma.storage.begin(),
+                                    mbar);
+                            }
+                            mbar.wait(count % 2);
+
+                            ma.layout = COL_MAJOR_A() ? matrix::col_major : matrix::row_major;
+                            mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
+                            ++count;
+                        }
+                        else if (true)
+                        {
+                            if (REARRANGE)
+                            {
+                                ma.load_async(A.begin()
+                                                  + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
+                                              COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
+                                mb.load_async(B.begin()
+                                                  + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
+                                              COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
+                            }
+                            else
+                            {
+                                ma.load_async(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
+                                              COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
+                                              COL_MAJOR_A() ? M() : K());
+                                mb.load_async(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
+                                              COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
+                                              COL_MAJOR_B() ? K() : N());
+                            }
 
                             async_commit();
                             async_wait();
                         }
                         else
                         {
-                            ma.load(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-                                    COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                                    COL_MAJOR_A() ? M() : K());
+                            if (REARRANGE)
+                            {
+                                ma.load(A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
+                                        COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
+                                mb.load(B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
+                                        COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
+                            }
+                            else
+                            {
+                                ma.load(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
+                                        COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
+                                        COL_MAJOR_A() ? M() : K());
+                                mb.load(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
+                                        COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
+                                        COL_MAJOR_B() ? K() : N());
+                            }
                         }
-
-                        // Loading matrix tile of Matrix B.
-                        matrix::workgroup_matrix_ab<ab_float_type> mb(bk, bn);
-                        mb.load(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
-                                COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
-                                COL_MAJOR_B() ? K() : N());
 
                         local_barrier(memory::threadgroup);
 
                         // Multiplying matrix tiles, adding the result.
                         mc += ma * mb;
-
                         local_barrier(memory::threadgroup);
                     });
 
@@ -443,20 +505,29 @@ try
 
                     gpu_for(0, K(), bk, [&](gpu_uint koff) {
                         // Loading matrix tile of Matrix A.
-                        matrix::warp_matrix<ab_float_type> ma(
-                            bm,
-                            bk,
-                            A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-                            COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                            COL_MAJOR_A() ? M() : K());
+                        matrix::warp_matrix<ab_float_type> ma(bm, bk);
+                        matrix::warp_matrix<ab_float_type> mb(bk, bn);
 
-                        // Loading matrix tile of Matrix B.
-                        matrix::warp_matrix<ab_float_type> mb(
-                            bk,
-                            bn,
-                            B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
-                            COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
-                            COL_MAJOR_B() ? K() : N());
+                        if (REARRANGE)
+                        {
+                            ma.load(A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
+                                    COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
+
+                            // Loading matrix tile of Matrix B.
+                            mb.load(B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
+                                    COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
+                        }
+                        else
+                        {
+                            ma.load(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
+                                    COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
+                                    COL_MAJOR_A() ? M() : K());
+
+                            // Loading matrix tile of Matrix B.
+                            mb.load(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
+                                    COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
+                                    COL_MAJOR_B() ? K() : N());
+                        }
 
                         // Multiplying matrix tiles, adding the result.
                         mc += ma * mb;
