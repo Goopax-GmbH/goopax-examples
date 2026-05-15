@@ -22,7 +22,7 @@ struct zero_initializer;
 struct zero_initializer
 {
     template<typename T>
-        requires(std::is_convertible_v<int, T> && !(goopax::is_gpu_type<T>::value)
+        requires(std::is_convertible_v<int, T> /*&& !(goopax::is_gpu_type<T>::value)*/
                  && (is_same_v<typename goopax::get_gpu_mode<T>::type, int>
                      || is_same_v<typename goopax::get_gpu_mode<T>::type, goopax::debugtype<int>>
                      || is_same_v<typename goopax::get_gpu_mode<T>::type, goopax::gpu_int>))
@@ -50,7 +50,7 @@ struct zero_initializer
     }
 
     template<typename T>
-        requires(!has_zero<T>::value) && (!std::is_convertible_v<int, T>) && (!goopax::is_gpu_type<T>::value)
+        requires(!has_zero<T>::value) && (!std::is_convertible_v<int, T>)/*&& (!goopax::is_gpu_type<T>::value)*/
     operator T() const;
 };
 
@@ -66,7 +66,7 @@ struct has_fill<T> : true_type
 };
 
 template<typename T>
-    requires(!has_zero<T>::value) && (!std::is_convertible_v<int, T>) && (!goopax::is_gpu_type<T>::value)
+    requires(!has_zero<T>::value) && (!std::is_convertible_v<int, T>)/*&& (!goopax::is_gpu_type<T>::value)*/
 zero_initializer::operator T() const
 {
     T ret;
