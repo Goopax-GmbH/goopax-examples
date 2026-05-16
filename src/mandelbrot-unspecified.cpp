@@ -75,12 +75,10 @@ make_kernel_function(type_enum_t type)
                            gpu_while(iter < max_iter && norm(z) < 10.f)
                            {
                                int Ninner = 4;
-#if defined(__STDCPP_FLOAT16_T__)
-                               if (type == type_enum<std::float16_t>::value)
+                               if (type == type_enum<precision::fp16>::value)
                                {
                                    Ninner = 2;
                                }
-#endif
 
                                for (int k = 0; k < Ninner; ++k) // Inner loop to speed up things.
                                {
