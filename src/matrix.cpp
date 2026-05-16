@@ -673,6 +673,10 @@ try
 catch (std::exception& e)
 {
     cout << "Got exception '" << e.what() << "'" << endl;
+    if (e.what() != (string) "unsupported type" && e.what() != (string) "Cannot find matching matrix multiply-add mode")
+    {
+        throw;
+    }
 }
 
 int main(int argc, char** argv)
