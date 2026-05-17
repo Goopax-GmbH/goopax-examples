@@ -121,11 +121,29 @@ struct workgroup_matrix_ab
 
         P_use_dest ptr_dest = reinterpret<P_use_dest>(storage.begin());
 
-        gpu_for_local(0,
-                      rows_use * cols_use,
-                      par_unroll(std::min(rows * cols / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
-                      [&](gpu_uint k) { ptr_dest[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
+        if (false)
+        {
+            gpu_for_local(0,
+                          rows_use * cols_use,
+                          par_unroll(std::min(rows * cols / local_size(),
+                                              static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                          [&](gpu_uint k) { ptr_dest[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
+        }
+        else
+        {
+            unsigned int step = std::min(rows_use * cols_use / local_size(),
+                                         static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value));
+
+            unsigned int k;
+            for (k = 0; k < rows_use * cols_use; k += step * local_size())
+            {
+                for (unsigned int m = 0; m < step; ++m)
+                {
+                    ptr_dest[k + local_id() * step + m] = ptr_use[k + local_id() * step + m];
+                }
+            }
+            assert(k == rows_use * cols_use);
+        }
     }
 
     template<typename P>
@@ -165,14 +183,32 @@ struct workgroup_matrix_ab
 
         // using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
 
-        gpu_for_local(0,
-                      rows_use * cols_use,
-                      par_unroll(std::min(rows_use * cols_use / local_size(),
-                                          static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
-                      [&](gpu_uint k) {
-                          async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
-                          // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
-                      });
+        if (false)
+        {
+            gpu_for_local(0,
+                          rows_use * cols_use,
+                          par_unroll(std::min(rows_use * cols_use / local_size(),
+                                              static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                          [&](gpu_uint k) {
+                              async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
+                              // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
+                          });
+        }
+        else
+        {
+            unsigned int step = std::min(rows_use * cols_use / local_size(),
+                                         static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value));
+
+            unsigned int k;
+            for (k = 0; k < rows_use * cols_use; k += step * local_size())
+            {
+                for (unsigned int m = 0; m < step; ++m)
+                {
+                    async_copy(ptr_use + k + local_id() * step + m, ptr_dest + k + local_id() * step + m);
+                }
+            }
+            assert(k == rows_use * cols_use);
+        }
     }
 
     template<typename P>
@@ -496,7 +532,7 @@ try
                             mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
                             ++count;
                         }
-                        else if (true)
+                        else if (false)
                         {
                             if (REARRANGE)
                             {
@@ -553,7 +589,7 @@ try
                 });
             },
             ls,
-            ls);
+            0);
     }
     else
     {
