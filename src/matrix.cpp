@@ -62,8 +62,8 @@ gpu_ostream& operator<<(gpu_ostream& s, const vector<T>& v)
 PARAMOPT<unsigned int> USE_LOCAL_SIZE("use_local_size", 0);
 namespace goopax::matrix
 {
-  //template<typename T_A, typename T_B>
-  //struct workgroup_matrix_product;
+// template<typename T_A, typename T_B>
+// struct workgroup_matrix_product;
 
 template<typename T>
 struct workgroup_matrix_ab
@@ -78,18 +78,18 @@ struct workgroup_matrix_ab
     unsigned int rows = 0;
     unsigned int cols = 0;
     layout_t layout;
-  //const unsigned int num_slots;
-  
-  local_mem<T> storage_i;
+    // const unsigned int num_slots;
 
-  typename make_gpu_pointer<T, memory::threadgroup>::type storage(gpu_uint slot)
-  {
-    return storage_i.begin() + slot*(rows*cols);
-  }
-  typename make_gpu_pointer<const T, memory::threadgroup>::type storage(gpu_uint slot) const
-  {
-    return storage_i.begin() + slot*(rows*cols);
-  }
+    local_mem<T> storage_i;
+
+    typename make_gpu_pointer<T, memory::threadgroup>::type storage(gpu_uint slot)
+    {
+        return storage_i.begin() + slot * (rows * cols);
+    }
+    typename make_gpu_pointer<const T, memory::threadgroup>::type storage(gpu_uint slot) const
+    {
+        return storage_i.begin() + slot * (rows * cols);
+    }
 
     unsigned int default_pitch(layout_t layout) const
     {
@@ -98,14 +98,14 @@ struct workgroup_matrix_ab
 
     template<typename P>
         requires pointer_valid<P>
-  void load(P ptr, gpu_uint slot, layout_t layout)
+    void load(P ptr, gpu_uint slot, layout_t layout)
     {
-      load(ptr, slot, layout, default_pitch(layout));
+        load(ptr, slot, layout, default_pitch(layout));
     }
 
     template<typename P>
         requires pointer_valid<P>
-  void load(P ptr, gpu_uint slot, layout_t layout, gpu_uint pitch)
+    void load(P ptr, gpu_uint slot, layout_t layout, gpu_uint pitch)
     {
         this->layout = layout;
 
@@ -158,14 +158,14 @@ struct workgroup_matrix_ab
 
     template<typename P>
         requires pointer_valid<P>
-  void load_async(P ptr, gpu_uint slot, layout_t layout)
+    void load_async(P ptr, gpu_uint slot, layout_t layout)
     {
-      load_async(ptr, slot, layout, default_pitch(layout));
+        load_async(ptr, slot, layout, default_pitch(layout));
     }
 
     template<typename P>
         requires pointer_valid<P>
-  void load_async(P ptr, gpu_uint slot, layout_t layout, gpu_uint pitch)
+    void load_async(P ptr, gpu_uint slot, layout_t layout, gpu_uint pitch)
     {
         this->layout = layout;
 
@@ -229,7 +229,7 @@ struct workgroup_matrix_ab
         load(ptr, layout, pitch);
     }
 
-  workgroup_matrix_ab(unsigned int rows0, unsigned int cols0, unsigned int num_slots)
+    workgroup_matrix_ab(unsigned int rows0, unsigned int cols0, unsigned int num_slots)
         : rows(rows0)
         , cols(cols0)
         , storage_i(rows * cols * num_slots)
@@ -258,36 +258,35 @@ struct workgroup_matrix_c
        Operator+=
        Adds the matrix product `ab` to the matrix.
     */
-  /*
+    /*
+      template<typename T_A, typename T_B>
+      workgroup_matrix_c& operator+=(const workgroup_matrix_product<T_A, T_B>& ab)
+      {
+          gpu_uint br = warp_id_in_group() / bcols;
+          gpu_uint bc = warp_id_in_group() % bcols;
+          // gpu_cout << "thread=" << global_id() << ". loading a from storage.begin() + " << br*(rows/brows)*ab.a.cols
+          //<< " and b from storage.begin() + " << bc*(cols/bcols)*ab.a.rows << "\n";
+          warp_matrix<T_A> a(rows / brows, ab.a.cols, ab.a.storage.begin() + br * (rows / brows) * ab.a.cols,
+      row_major); warp_matrix<T_B> b(ab.a.cols, cols / bcols, ab.b.storage.begin() + bc * (cols / bcols) * ab.b.rows,
+      col_major); multiply_add(a, b, tile);
+          // gpu_cout << "  operator+=. before: tile=" << tile.coeffs();
+          tile += a * b;
+          // gpu_cout << "\n  a=" << a.coeffs()
+          //<< "\n  b=" << b.coeffs()
+          //<< "\n  -> tile=" << tile.coeffs() << "\n";
+          return *this;
+      }
+    */
     template<typename T_A, typename T_B>
-    workgroup_matrix_c& operator+=(const workgroup_matrix_product<T_A, T_B>& ab)
+    void add_product(const workgroup_matrix_ab<T_A>& wa, const workgroup_matrix_ab<T_B>& wb, gpu_uint slot)
     {
-        gpu_uint br = warp_id_in_group() / bcols;
-        gpu_uint bc = warp_id_in_group() % bcols;
-        // gpu_cout << "thread=" << global_id() << ". loading a from storage.begin() + " << br*(rows/brows)*ab.a.cols
-        //<< " and b from storage.begin() + " << bc*(cols/bcols)*ab.a.rows << "\n";
-        warp_matrix<T_A> a(rows / brows, ab.a.cols, ab.a.storage.begin() + br * (rows / brows) * ab.a.cols, row_major);
-        warp_matrix<T_B> b(ab.a.cols, cols / bcols, ab.b.storage.begin() + bc * (cols / bcols) * ab.b.rows, col_major);
-        multiply_add(a, b, tile);
-        // gpu_cout << "  operator+=. before: tile=" << tile.coeffs();
-        tile += a * b;
-        // gpu_cout << "\n  a=" << a.coeffs()
-        //<< "\n  b=" << b.coeffs()
-        //<< "\n  -> tile=" << tile.coeffs() << "\n";
-        return *this;
-    }
-  */
-  template <typename T_A, typename T_B>
-  void add_product(const workgroup_matrix_ab<T_A>& wa, const workgroup_matrix_ab<T_B>& wb, gpu_uint slot)
-  {
         gpu_uint br = warp_id_in_group() / bcols;
         gpu_uint bc = warp_id_in_group() % bcols;
         warp_matrix<T_A> a(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows) * wa.cols, row_major);
         warp_matrix<T_B> b(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols) * wb.rows, col_major);
-        //multiply_add(a, b, tile);
+        // multiply_add(a, b, tile);
         tile += a * b;
-  }
-  
+    }
 
     void fill(const typename make_gpu<T>::type& value)
     {
@@ -350,7 +349,7 @@ workgroup_matrix_product<T_A, T_B> operator*(const workgroup_matrix_ab<T_A>& a, 
     return workgroup_matrix_product<T_A, T_B>{ a, b };
 }
 */
-  
+
 }
 
 template<typename a_float_type, typename c_float_type>
@@ -514,15 +513,11 @@ try
                     matrix::workgroup_matrix_c<c_float_type> mc(bm, bn);
                     mc.fill(static_cast<c_float_type>(0));
 
-		    matrix::workgroup_matrix_ab<a_float_type> ma(bm, bk, 2);
-		    matrix::workgroup_matrix_ab<b_float_type> mb(bk, bn, 2);
+                    matrix::workgroup_matrix_ab<a_float_type> ma(bm, bk, 2);
+                    matrix::workgroup_matrix_ab<b_float_type> mb(bk, bn, 2);
 
-                    gpu_for(0, (K / bk), [&](gpu_uint block_k) {
+                    auto load_data = [&](gpu_uint block_k) {
                         gpu_uint koff = block_k * bk;
-
-                        // Loading matrix tile of Matrix A.
-
-                        local_barrier(memory::threadgroup);
 
                         if (USE_BULK())
                         {
@@ -535,13 +530,13 @@ try
                                     B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
                                     B.begin()
                                         + ((COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk) + bk * bn),
-                                    mb.storage(block_k%2),
+                                    mb.storage(block_k % 2),
                                     mbar);
                                 bulk_copy(
                                     A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
                                     A.begin()
                                         + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm + bm * bk),
-                                    ma.storage(block_k%2),
+                                    ma.storage(block_k % 2),
                                     mbar);
                             }
                             mbar.wait(count % 2);
@@ -550,62 +545,83 @@ try
                             mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
                             ++count;
                         }
-                        else if (false)
+                        else if (true)
                         {
                             if (REARRANGE)
                             {
                                 ma.load_async(A.begin()
                                                   + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
-					      block_k%2,
+                                              block_k % 2,
                                               COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
                                 mb.load_async(B.begin()
                                                   + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
-					      block_k%2,
+                                              block_k % 2,
                                               COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
                             }
                             else
                             {
                                 ma.load_async(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-					      block_k%2,
+                                              block_k % 2,
                                               COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
                                               COL_MAJOR_A() ? M() : K());
                                 mb.load_async(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
-					      block_k%2,
+                                              block_k % 2,
                                               COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
                                               COL_MAJOR_B() ? K() : N());
                             }
 
                             async_commit();
-                            async_wait();
                         }
                         else
                         {
                             if (REARRANGE)
                             {
                                 ma.load(A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
-					block_k%2,
+                                        block_k % 2,
                                         COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
                                 mb.load(B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
-					block_k%2,
+                                        block_k % 2,
                                         COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
                             }
                             else
                             {
                                 ma.load(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-					block_k%2,
+                                        block_k % 2,
                                         COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
                                         COL_MAJOR_A() ? M() : K());
                                 mb.load(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
-					block_k%2,
+                                        block_k % 2,
                                         COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
                                         COL_MAJOR_B() ? K() : N());
                             }
                         }
+                    };
+
+                    load_data(0);
+
+                    gpu_for(0, (K / bk), [&](gpu_uint block_k) {
+                        gpu_if(block_k != (K / bk) - 1)
+                        {
+                            load_data(block_k + 1);
+                            if (!USE_BULK)
+                            {
+                                async_wait(1);
+                            }
+                        }
+                        gpu_else
+                        {
+                            if (!USE_BULK)
+                            {
+                                async_wait(0);
+                            }
+                        }
+
+                        // Loading matrix tile of Matrix A.
 
                         local_barrier(memory::threadgroup);
 
                         // Multiplying matrix tiles, adding the result.
-                        mc.add_product(ma, mb, block_k%2);
+                        mc.add_product(ma, mb, block_k % 2);
                         local_barrier(memory::threadgroup);
                     });
 
