@@ -500,8 +500,7 @@ try
         multiply.assign(
             device,
             [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
-                mbarrier mbar(2);
-                gpu_uint count = 0;
+                mbarriers mbar(2, 2);
 
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
                     gpu_uint block_m = block / (N / bn);
@@ -531,19 +530,19 @@ try
                                     B.begin()
                                         + ((COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk) + bk * bn),
                                     mb.storage(block_k % 2),
-                                    mbar);
+                                    mbar(block_k % 2));
                                 bulk_copy(
                                     A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
                                     A.begin()
                                         + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm + bm * bk),
                                     ma.storage(block_k % 2),
-                                    mbar);
+                                    mbar(block_k % 2));
                             }
-                            mbar.wait(count % 2);
+                            // mbar.wait(count % 2);
 
                             ma.layout = COL_MAJOR_A() ? matrix::col_major : matrix::row_major;
                             mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
-                            ++count;
+                            //++count;
                         }
                         else if (true)
                         {
@@ -615,13 +614,18 @@ try
                                 async_wait(0);
                             }
                         }
-
-                        // Loading matrix tile of Matrix A.
-
-                        local_barrier(memory::threadgroup);
+                        if (USE_BULK)
+                        {
+                            mbar(block_k % 2).wait(block_k / 2);
+                        }
+                        else
+                        {
+                            local_barrier(memory::threadgroup);
+                        }
 
                         // Multiplying matrix tiles, adding the result.
                         mc.add_product(ma, mb, block_k % 2);
+
                         local_barrier(memory::threadgroup);
                     });
 
