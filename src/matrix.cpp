@@ -32,15 +32,8 @@ PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
 PARAMOPT<bool> COL_MAJOR_C("col_major_c", false);
 
 PARAMOPT<bool> REARRANGE("rearrange", true);
-PARAMOPT<bool> USE_BULK("use_bulk", false);
-
-/*
-  static_assert(goopax_is_pointer<gpu_type<int*>>::value);
-static_assert(goopax_is_pointer<gpu_type<goopax::cpu_pointer<signed char, memory::threadgroup>>>::value);
-
-static_assert(!can_reinterpret_pointer_check<gpu_type<int*>, gpu_type<goopax::cpu_pointer<signed char,
-memory::threadgroup>>>::value);
-*/
+PARAMOPT<bool> USE_WORKGROUP_MATRIX("use_workgroup_matrix", true);
+PARAMOPT<unsigned int> WORKGROUP_MATRIX_LOCAL_SIZE("workgroup_matrix_local_size", 256);
 
 namespace std
 {
@@ -59,12 +52,8 @@ gpu_ostream& operator<<(gpu_ostream& s, const vector<T>& v)
 }
 }
 
-PARAMOPT<unsigned int> USE_LOCAL_SIZE("use_local_size", 0);
 namespace goopax::matrix
 {
-// template<typename T_A, typename T_B>
-// struct workgroup_matrix_product;
-
 template<typename T>
 struct workgroup_matrix_ab
 {
@@ -78,7 +67,6 @@ struct workgroup_matrix_ab
     unsigned int rows = 0;
     unsigned int cols = 0;
     layout_t layout;
-    // const unsigned int num_slots;
 
     local_mem<T> storage_i;
 
@@ -409,34 +397,46 @@ try
     // Choosing suitable matrix block sizes.
     // Larger values can improve performance, but only if there are
     // enough registers available.
-    unsigned int bm = 64;
-    unsigned int bn = 64;
-    unsigned int bk = 16;
-    if (device.max_registers() < 80)
+    unsigned int bm;
+    unsigned int bn;
+    unsigned int bk;
+    if (USE_WORKGROUP_MATRIX)
     {
-        bm = 32;
-        bn = 32;
+        assert(REARRANGE);
+        bm = 256;
+        bn = 256;
+        bk = 16;
     }
-    if (get_bits<a_float_type>::value == 8)
+    else
     {
-        bk = 64;
-    }
-    if (get_bits<a_float_type>::value == 4)
-    {
-        if (goopax_is_integral<a_float_type>::value)
+        bm = 64;
+        bn = 64;
+        bk = 16;
+        if (device.max_registers() < 80)
         {
-            bk = 64;
-            bm = 64;
+            bm = 32;
             bn = 32;
         }
-        else
+        if (get_bits<a_float_type>::value == 8)
         {
             bk = 64;
-            bm = 64;
-            bn = 64;
+        }
+        if (get_bits<a_float_type>::value == 4)
+        {
+            if (goopax_is_integral<a_float_type>::value)
+            {
+                bk = 64;
+                bm = 64;
+                bn = 32;
+            }
+            else
+            {
+                bk = 64;
+                bm = 64;
+                bn = 64;
+            }
         }
     }
-
     if (BM())
     {
         bm = BM();
@@ -453,6 +453,8 @@ try
     assert(M % bm == 0);
     assert(N % bn == 0);
     assert(K % bk == 0);
+
+    const bool use_bulk_copy = device.support_bulk_copy();
 
     unsigned int Nthreads = device.default_local_size();
 
@@ -493,13 +495,12 @@ try
     // Creating the kernel
     kernel<void(buffer<a_float_type> & A, buffer<b_float_type> & B, buffer<c_float_type> & C)> multiply;
 
-    if (USE_LOCAL_SIZE != 0)
+    if (USE_WORKGROUP_MATRIX)
     {
-        const unsigned int ls = USE_LOCAL_SIZE();
-
         multiply.assign(
             device,
-            [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
+            [bm, bn, bk, use_bulk_copy](
+                resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
                 mbarriers mbar(2, 2);
 
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
@@ -518,7 +519,7 @@ try
                     auto load_data = [&](gpu_uint block_k) {
                         gpu_uint koff = block_k * bk;
 
-                        if (USE_BULK())
+                        if (use_bulk_copy)
                         {
                             gpu_if(local_id() == 0)
                             {
@@ -544,7 +545,7 @@ try
                             mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
                             //++count;
                         }
-                        else if (true)
+                        else
                         {
                             if (REARRANGE)
                             {
@@ -571,29 +572,6 @@ try
 
                             async_commit();
                         }
-                        else
-                        {
-                            if (REARRANGE)
-                            {
-                                ma.load(A.begin() + (COL_MAJOR_A ? moff * bk + koff * M() : moff * K() + koff * bm),
-                                        block_k % 2,
-                                        COL_MAJOR_A() ? matrix::col_major : matrix::row_major);
-                                mb.load(B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
-                                        block_k % 2,
-                                        COL_MAJOR_B() ? matrix::col_major : matrix::row_major);
-                            }
-                            else
-                            {
-                                ma.load(A.begin() + (COL_MAJOR_A ? moff + koff * M() : moff * K() + koff),
-                                        block_k % 2,
-                                        COL_MAJOR_A() ? matrix::col_major : matrix::row_major,
-                                        COL_MAJOR_A() ? M() : K());
-                                mb.load(B.begin() + (COL_MAJOR_B ? koff + noff * K() : koff * N() + noff),
-                                        block_k % 2,
-                                        COL_MAJOR_B() ? matrix::col_major : matrix::row_major,
-                                        COL_MAJOR_B() ? K() : N());
-                            }
-                        }
                     };
 
                     load_data(0);
@@ -602,19 +580,19 @@ try
                         gpu_if(block_k != (K / bk) - 1)
                         {
                             load_data(block_k + 1);
-                            if (!USE_BULK)
+                            if (!use_bulk_copy)
                             {
                                 async_wait(1);
                             }
                         }
                         gpu_else
                         {
-                            if (!USE_BULK)
+                            if (!use_bulk_copy)
                             {
                                 async_wait(0);
                             }
                         }
-                        if (USE_BULK)
+                        if (use_bulk_copy)
                         {
                             mbar(block_k % 2).wait(block_k / 2);
                         }
@@ -634,7 +612,7 @@ try
                              COL_MAJOR_C() ? M() : N());
                 });
             },
-            ls,
+            WORKGROUP_MATRIX_LOCAL_SIZE(),
             0);
     }
     else
