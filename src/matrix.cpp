@@ -23,34 +23,24 @@ PARAMOPT<unsigned int> M("m", 4096);
 PARAMOPT<unsigned int> N("n", 4096);
 PARAMOPT<unsigned int> K("k", 4096);
 
+// Block sizes. If 0, suitable values will be set depenting on element types.
 PARAMOPT<unsigned int> BM("bm", 0);
 PARAMOPT<unsigned int> BN("bn", 0);
 PARAMOPT<unsigned int> BK("bk", 0);
 
+// Matrix layouts
 PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
 PARAMOPT<bool> COL_MAJOR_C("col_major_c", false);
 
-PARAMOPT<bool> REARRANGE("rearrange", true);
+// If true, matrix multiplication will be done on workgroup level, reducing memory bandwidth.
 PARAMOPT<bool> USE_WORKGROUP_MATRIX("use_workgroup_matrix", true);
-PARAMOPT<unsigned int> WORKGROUP_MATRIX_LOCAL_SIZE("workgroup_matrix_local_size", 256);
 
-namespace std
-{
-template<typename T>
-gpu_ostream& operator<<(gpu_ostream& s, const vector<T>& v)
-{
-    s << "(";
-    for (unsigned int k = 0; k < v.size(); ++k)
-    {
-        if (k != 0)
-            s << ", ";
-        s << v[k];
-    }
-    s << ")";
-    return s;
-}
-}
+// Use tiled matrix storage for A and B matrices. Must be set to true if USE_WORKGROUP_MATRIX is true.
+PARAMOPT<bool> REARRANGE("rearrange", true);
+
+// Workgroup size if USE_WORKGROUP_MATRIX is true.
+PARAMOPT<unsigned int> WORKGROUP_MATRIX_LOCAL_SIZE("workgroup_matrix_local_size", 256);
 
 namespace goopax::matrix
 {
@@ -179,18 +169,14 @@ struct workgroup_matrix_ab
 
         P_use_dest ptr_dest = reinterpret<P_use_dest>(storage(slot));
 
-        // using value_type = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
-
         if (false)
         {
-            gpu_for_local(0,
-                          rows_use * cols_use,
-                          par_unroll(std::min(rows_use * cols_use / local_size(),
-                                              static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
-                          [&](gpu_uint k) {
-                              async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k);
-                              // storage[k] = ptr_use[k + k / cols_use * (pitch - cols_use)];
-                          });
+            gpu_for_local(
+                0,
+                rows_use * cols_use,
+                par_unroll(std::min(rows_use * cols_use / local_size(),
+                                    static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                [&](gpu_uint k) { async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k); });
         }
         else
         {
@@ -242,29 +228,6 @@ struct workgroup_matrix_c
             typename std::remove_const<typename goopax_remove_pointer<typename make_cpu<P>::type>::type>::type,
             T>::value;
 
-    /**
-       Operator+=
-       Adds the matrix product `ab` to the matrix.
-    */
-    /*
-      template<typename T_A, typename T_B>
-      workgroup_matrix_c& operator+=(const workgroup_matrix_product<T_A, T_B>& ab)
-      {
-          gpu_uint br = warp_id_in_group() / bcols;
-          gpu_uint bc = warp_id_in_group() % bcols;
-          // gpu_cout << "thread=" << global_id() << ". loading a from storage.begin() + " << br*(rows/brows)*ab.a.cols
-          //<< " and b from storage.begin() + " << bc*(cols/bcols)*ab.a.rows << "\n";
-          warp_matrix<T_A> a(rows / brows, ab.a.cols, ab.a.storage.begin() + br * (rows / brows) * ab.a.cols,
-      row_major); warp_matrix<T_B> b(ab.a.cols, cols / bcols, ab.b.storage.begin() + bc * (cols / bcols) * ab.b.rows,
-      col_major); multiply_add(a, b, tile);
-          // gpu_cout << "  operator+=. before: tile=" << tile.coeffs();
-          tile += a * b;
-          // gpu_cout << "\n  a=" << a.coeffs()
-          //<< "\n  b=" << b.coeffs()
-          //<< "\n  -> tile=" << tile.coeffs() << "\n";
-          return *this;
-      }
-    */
     template<typename T_A, typename T_B>
     void add_product(const workgroup_matrix_ab<T_A>& wa, const workgroup_matrix_ab<T_B>& wb, gpu_uint slot)
     {
@@ -272,7 +235,6 @@ struct workgroup_matrix_c
         gpu_uint bc = warp_id_in_group() % bcols;
         warp_matrix<T_A> a(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows) * wa.cols, row_major);
         warp_matrix<T_B> b(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols) * wb.rows, col_major);
-        // multiply_add(a, b, tile);
         tile += a * b;
     }
 
@@ -311,32 +273,6 @@ struct workgroup_matrix_c
         cout << "global_size()=" << global_size() << endl;
     }
 };
-
-/**
-   Temporary expression for a matrix product.
-   \ingroup warp_matrix
-*/
-/*template<typename T_A, typename T_B>
-struct workgroup_matrix_product
-{
-    const workgroup_matrix_ab<T_A>& a;
-    const workgroup_matrix_ab<T_B>& b;
-  const gpu_uint slot;
-};
-*/
-
-/**
-   operator*
-   \ingroup warp_matrix
-   Returns a temporary expression. The result can be used with operator+ or operator+=.
- */
-/*
-  template<typename T_A, typename T_B>
-workgroup_matrix_product<T_A, T_B> operator*(const workgroup_matrix_ab<T_A>& a, const workgroup_matrix_ab<T_B>& b)
-{
-    return workgroup_matrix_product<T_A, T_B>{ a, b };
-}
-*/
 
 }
 
@@ -497,6 +433,8 @@ try
 
     if (USE_WORKGROUP_MATRIX)
     {
+        // Using workgroup-matrix multiplication.
+
         multiply.assign(
             device,
             [bm, bn, bk, use_bulk_copy](
@@ -523,9 +461,6 @@ try
                         {
                             gpu_if(local_id() == 0)
                             {
-                                // gpu_if(elect().first)
-                                //{
-
                                 bulk_copy(
                                     B.begin() + (COL_MAJOR_B ? koff * bn + noff * K() : koff * N() + noff * bk),
                                     B.begin()
@@ -539,11 +474,9 @@ try
                                     ma.storage(block_k % 2),
                                     mbar(block_k % 2));
                             }
-                            // mbar.wait(count % 2);
 
                             ma.layout = COL_MAJOR_A() ? matrix::col_major : matrix::row_major;
                             mb.layout = COL_MAJOR_B() ? matrix::col_major : matrix::row_major;
-                            //++count;
                         }
                         else
                         {
@@ -574,14 +507,17 @@ try
                         }
                     };
 
+                    // Start loading the first tile.
                     load_data(0);
 
                     gpu_for(0, (K / bk), [&](gpu_uint block_k) {
                         gpu_if(block_k != (K / bk) - 1)
                         {
+                            // Trigger copying of the next tile.
                             load_data(block_k + 1);
                             if (!use_bulk_copy)
                             {
+                                // And wait for the previous copy operation to finish.
                                 async_wait(1);
                             }
                         }
@@ -589,11 +525,14 @@ try
                         {
                             if (!use_bulk_copy)
                             {
+                                // This is the last tile. Need to wait for the data transfer to finish.
                                 async_wait(0);
                             }
                         }
                         if (use_bulk_copy)
                         {
+                            // bulk copy uses mbarrier synchronization mechanism. Alternating between two mbarrier
+                            // objects, with 2 parity states each. No need for local_barrier.
                             mbar(block_k % 2).wait(block_k / 2);
                         }
                         else
@@ -604,6 +543,7 @@ try
                         // Multiplying matrix tiles, adding the result.
                         mc.add_product(ma, mb, block_k % 2);
 
+                        // Barrier needed to prevent overwriting data that is currently in use.
                         local_barrier(memory::threadgroup);
                     });
 
@@ -617,6 +557,8 @@ try
     }
     else
     {
+        // Register-only matrix multiplication.
+
         multiply.assign(
             device, [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
@@ -716,14 +658,6 @@ try
     MatrixX<double> TA = get_matrix(Ad, COL_MAJOR_A(), M, K);
     MatrixX<double> TB = get_matrix(Bd, COL_MAJOR_B(), K, N);
     MatrixX<double> TC = get_matrix(C, COL_MAJOR_C(), M, N);
-
-    /*
-      cout << "A=\n" << TA << endl;
-    cout << "B=\n" << TB << endl;
-    cout << "C=\n" << TC << endl;
-    cout << "C_CPU=\n" << (TA * TB) << endl;
-    cout << "\ndiff=\n" << TC - (TA * TB) << endl;
-    */
 
     VectorX<double> rwant = TA * (TB * test_vector);
     VectorX<double> rhave = TC.template cast<double>() * test_vector;
