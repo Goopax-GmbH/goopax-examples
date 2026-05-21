@@ -184,8 +184,22 @@ try
     std::random_device rd;
     WELL512_data rnd(device, device.default_global_size_max(), rd());
 
-    fill_random(rnd, A, Ad, bm, bk, K);
-    fill_random(rnd, B, Bd, bn, bk, K);
+    if (COL_MAJOR_A)
+    {
+        fill_random(rnd, A, Ad, bk, bm, M);
+    }
+    else
+    {
+        fill_random(rnd, A, Ad, bm, bk, K);
+    }
+    if (COL_MAJOR_B)
+    {
+        fill_random(rnd, B, Bd, bn, bk, K);
+    }
+    else
+    {
+        fill_random(rnd, B, Bd, bk, bn, N);
+    }
     C.fill(numeric_limits<c_float_type>::quiet_NaN());
 
     // Creating the kernel

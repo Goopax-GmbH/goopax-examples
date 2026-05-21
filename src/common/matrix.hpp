@@ -1,4 +1,5 @@
 #pragma once
+#include <goopax>
 
 namespace goopax::matrix
 {
@@ -192,8 +193,24 @@ struct workgroup_matrix_c
     {
         gpu_uint br = warp_id_in_group() / bcols;
         gpu_uint bc = warp_id_in_group() % bcols;
-        warp_matrix<T_A> a(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows) * wa.cols, row_major);
-        warp_matrix<T_B> b(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols) * wb.rows, col_major);
+        warp_matrix<T_A> a;
+        if (wa.layout == row_major)
+        {
+            a = warp_matrix<T_A>(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows) * wa.cols, wa.layout);
+        }
+        else
+        {
+            a = warp_matrix<T_A>(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows), wa.layout, wa.rows);
+        }
+        warp_matrix<T_B> b;
+        if (wb.layout == col_major)
+        {
+            b = warp_matrix<T_B>(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols) * wb.rows, wb.layout);
+        }
+        else
+        {
+            b = warp_matrix<T_B>(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols), wb.layout, wb.cols);
+        }
         tile += a * b;
     }
 
@@ -210,7 +227,7 @@ struct workgroup_matrix_c
             ptr
                 + (layout == row_major
                        ? warp_id_in_group() / bcols * tile.rows * pitch + warp_id_in_group() % bcols * (cols / bcols)
-                       : warp_id_in_group() % bcols * pitch + warp_id_in_group() / bcols * tile.rows),
+                       : warp_id_in_group() / bcols * tile.rows + warp_id_in_group() % bcols * (cols / bcols) * pitch),
             layout,
             pitch);
     }
@@ -238,8 +255,8 @@ create_matmul_kernel(goopax_device device,
                      unsigned int bm,
                      unsigned int bn,
                      unsigned int bk,
-                     bool use_workgroup_matrix,
-                     bool rearrange,
+                     bool use_workgroup_matrix = true,
+                     bool rearrange = true,
                      unsigned int force_local_size = 0,
                      layout_t layout_a = row_major,
                      layout_t layout_b = col_major,
@@ -259,13 +276,14 @@ create_matmul_kernel(goopax_device device,
     assert(N % bn == 0);
     assert(K % bk == 0);
 
-    const bool use_bulk_copy = device.support_bulk_copy() && rearrange;
+    const bool use_bulk_copy = device.support_bulk_copy();
 
     unsigned int Nthreads = device.default_local_size();
 
     if (use_workgroup_matrix)
     {
         assert((K / bk) % 4 == 0); // Required for the mbarrier synchronization mechanism.
+        assert(rearrange);
 
         return kernel(
             device,
@@ -319,21 +337,21 @@ create_matmul_kernel(goopax_device device,
                                 ma.load_async(
                                     A.begin() + (layout_a == col_major ? moff * bk + koff * M : moff * K + koff * bm),
                                     block_k % 2,
-                                    layout_a == col_major ? matrix::col_major : matrix::row_major);
+                                    layout_a);
                                 mb.load_async(
                                     B.begin() + (layout_b == col_major ? koff * bn + noff * K : koff * N + noff * bk),
                                     block_k % 2,
-                                    layout_b == col_major ? matrix::col_major : matrix::row_major);
+                                    layout_b);
                             }
                             else
                             {
                                 ma.load_async(A.begin() + (layout_a == col_major ? moff + koff * M : moff * K + koff),
                                               block_k % 2,
-                                              layout_a == col_major ? matrix::col_major : matrix::row_major,
+                                              layout_a,
                                               layout_a == col_major ? M : K);
                                 mb.load_async(B.begin() + (layout_b == col_major ? koff + noff * K : koff * N + noff),
                                               block_k % 2,
-                                              layout_b == col_major ? matrix::col_major : matrix::row_major,
+                                              layout_b,
                                               layout_b == col_major ? K : N);
                             }
 
