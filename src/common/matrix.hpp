@@ -56,14 +56,14 @@ struct workgroup_matrix_ab
 
         using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
         using value_type_use =
-            typename std::conditional<(get_bits<value_type_orig>::value < 32), int, value_type_orig>::type;
+            typename std::conditional<(bitsize<value_type_orig>::value < 32), int, value_type_orig>::type;
 
         using P_use_src =
             typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
         using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
 
         P_use_src ptr_use = reinterpret<P_use_src>(ptr);
-        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
+        constexpr unsigned int size_factor = bitsize<value_type_use>::value / bitsize<value_type_orig>::value;
         pitch /= size_factor;
         cols_use /= size_factor;
 
@@ -74,13 +74,13 @@ struct workgroup_matrix_ab
             gpu_for_local(0,
                           rows_use * cols_use,
                           par_unroll(std::min(rows * cols / local_size(),
-                                              static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                                              static_cast<unsigned int>(16 * 8 / bitsize<value_type_use>::value))),
                           [&](gpu_uint k) { ptr_dest[k] = ptr[k + k / cols_use * (pitch - cols_use)]; });
         }
         else
         {
             unsigned int step = std::min(rows_use * cols_use / local_size(),
-                                         static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value));
+                                         static_cast<unsigned int>(16 * 8 / bitsize<value_type_use>::value));
 
             unsigned int k;
             for (k = 0; k < rows_use * cols_use; k += step * local_size())
@@ -116,14 +116,14 @@ struct workgroup_matrix_ab
 
         using value_type_orig = typename goopax_remove_pointer<typename make_cpu<P>::type>::type;
         using value_type_use =
-            typename std::conditional<(get_bits<value_type_orig>::value < 32), int, value_type_orig>::type;
+            typename std::conditional<(bitsize<value_type_orig>::value < 32), int, value_type_orig>::type;
 
         using P_use_src =
             typename make_gpu_pointer<value_type_use, get_pointer_scope<typename make_cpu<P>::type>::value>::type;
         using P_use_dest = typename make_gpu_pointer<value_type_use, memory::threadgroup>::type;
 
         P_use_src ptr_use = reinterpret<P_use_src>(ptr);
-        constexpr unsigned int size_factor = get_bits<value_type_use>::value / get_bits<value_type_orig>::value;
+        constexpr unsigned int size_factor = bitsize<value_type_use>::value / bitsize<value_type_orig>::value;
         pitch /= size_factor;
         cols_use /= size_factor;
 
@@ -135,13 +135,13 @@ struct workgroup_matrix_ab
                 0,
                 rows_use * cols_use,
                 par_unroll(std::min(rows_use * cols_use / local_size(),
-                                    static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value))),
+                                    static_cast<unsigned int>(16 * 8 / bitsize<value_type_use>::value))),
                 [&](gpu_uint k) { async_copy(ptr_use + k + k / cols_use * (pitch - cols_use), ptr_dest + k); });
         }
         else
         {
             unsigned int step = std::min(rows_use * cols_use / local_size(),
-                                         static_cast<unsigned int>(16 * 8 / get_bits<value_type_use>::value));
+                                         static_cast<unsigned int>(16 * 8 / bitsize<value_type_use>::value));
 
             unsigned int k;
             for (k = 0; k < rows_use * cols_use; k += step * local_size())

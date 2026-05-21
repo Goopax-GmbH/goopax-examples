@@ -65,7 +65,7 @@ void fill_random(WELL512_data& rnd,
             WELL512_lib rndlib(rnd);
 
             // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
-            unsigned int par = max(32u / static_cast<unsigned int>(get_bits<a_float_type>::value), 1u);
+            unsigned int par = max(32u / static_cast<unsigned int>(bitsize<a_float_type>::value), 1u);
             gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
                 auto pd = ad.begin() + k;
                 auto p = a.begin() + k;
@@ -117,12 +117,12 @@ try
         bm = 256;
         bn = 256;
         bk = 16;
-        if (get_bits<c_float_type>::value >= 32)
+        if (bitsize<c_float_type>::value >= 32)
         {
             bm = 128;
             bn = 128;
         }
-        if (get_bits<a_float_type>::value <= 8)
+        if (bitsize<a_float_type>::value <= 8)
         {
             bk = 32;
         }
@@ -137,11 +137,11 @@ try
             bm = 32;
             bn = 32;
         }
-        if (get_bits<a_float_type>::value == 8)
+        if (bitsize<a_float_type>::value == 8)
         {
             bk = 64;
         }
-        if (get_bits<a_float_type>::value == 4)
+        if (bitsize<a_float_type>::value == 4)
         {
             bk = 64;
             if (goopax_is_integral<a_float_type>::value)
