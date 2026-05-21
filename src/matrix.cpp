@@ -39,8 +39,8 @@ PARAMOPT<bool> USE_WORKGROUP_MATRIX("use_workgroup_matrix", true);
 // Use tiled matrix storage for A and B matrices. Must be set to true if USE_WORKGROUP_MATRIX is true.
 PARAMOPT<bool> REARRANGE("rearrange", true);
 
-// Workgroup size if USE_WORKGROUP_MATRIX is true.
-PARAMOPT<unsigned int> WORKGROUP_MATRIX_LOCAL_SIZE("workgroup_matrix_local_size", 256);
+// Use this workgroup size. If 0, a suitable value will be chosen.
+PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 0);
 
 namespace goopax::matrix
 {
@@ -267,10 +267,6 @@ struct workgroup_matrix_c
         }
         bcols = local_size() / warp_size() / brows;
         tile = warp_matrix<T>(rows / brows, cols / bcols);
-        cout << "workgroup_matrix_c: rows=" << rows << ", cols=" << cols << ", brows=" << brows << ", bcols=" << bcols
-             << endl;
-        cout << "local_size()=" << local_size() << endl;
-        cout << "global_size()=" << global_size() << endl;
     }
 };
 
@@ -323,67 +319,19 @@ void fill_random(WELL512_data& rnd,
 }
 
 template<typename a_float_type, typename b_float_type, typename c_float_type>
-void run_with_types(goopax_device device)
-try
+kernel<void(buffer<a_float_type>& A, buffer<b_float_type>& B, buffer<c_float_type>& C)>
+create_matmul_kernel(goopax_device device, unsigned int bm, unsigned int bn, unsigned int bk)
 {
-    cout << "\n\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
-         << ", T_B=" << type_name(type_enum<b_float_type>::value)
-         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
-
-    // Choosing suitable matrix block sizes.
-    // Larger values can improve performance, but only if there are
-    // enough registers available.
-    unsigned int bm;
-    unsigned int bn;
-    unsigned int bk;
+    unsigned int ls = 0;
     if (USE_WORKGROUP_MATRIX)
     {
         assert(REARRANGE);
-        bm = 256;
-        bn = 256;
-        bk = 16;
+
+        ls = 256;
     }
-    else
+    if (LOCAL_SIZE())
     {
-        bm = 64;
-        bn = 64;
-        bk = 16;
-        if (device.max_registers() < 80)
-        {
-            bm = 32;
-            bn = 32;
-        }
-        if (get_bits<a_float_type>::value == 8)
-        {
-            bk = 64;
-        }
-        if (get_bits<a_float_type>::value == 4)
-        {
-            if (goopax_is_integral<a_float_type>::value)
-            {
-                bk = 64;
-                bm = 64;
-                bn = 32;
-            }
-            else
-            {
-                bk = 64;
-                bm = 64;
-                bn = 64;
-            }
-        }
-    }
-    if (BM())
-    {
-        bm = BM();
-    }
-    if (BN())
-    {
-        bn = BN();
-    }
-    if (BK())
-    {
-        bk = BK();
+        ls = LOCAL_SIZE();
     }
 
     assert(M % bm == 0);
@@ -394,48 +342,12 @@ try
 
     unsigned int Nthreads = device.default_local_size();
 
-    // Matrix buffers
-    buffer<a_float_type> A(device, M * K);
-    buffer<b_float_type> B(device, K * N);
-    buffer<c_float_type> C(device, M * N);
-
-    // Matrix buffers for verification
-    buffer<c_float_type> Ad(device, M * K);
-    buffer<c_float_type> Bd(device, K * N);
-
-    cout << "Memory requirements [MB]: " << (A.size() * get_bits<a_float_type>::value / 8 >> 16) << " + "
-         << (B.size() * get_bits<b_float_type>::value / 8 >> 16) << " + " << (C.size() * sizeof(c_float_type) >> 16)
-         << " = "
-         << ((A.size() * get_bits<a_float_type>::value / 8 + B.size() * get_bits<b_float_type>::value / 8
-              + C.size() * sizeof(c_float_type))
-             >> 16)
-         << ", device cache: ";
-    if (device.cache_size() == 0)
-        cout << "unknown";
-    else
-        cout << (device.cache_size() >> 16);
-    cout << "\nRegisters required: "
-         << bm * bk * get_bits<a_float_type>::value / Nthreads / 32
-                + bk * bn * get_bits<b_float_type>::value / Nthreads / 32
-                + bm * bn * get_bits<c_float_type>::value / Nthreads / 32
-         << " / " << device.max_registers() << endl;
-
-    // Filling with random numbers
-    std::random_device rd;
-    WELL512_data rnd(device, device.default_global_size_max(), rd());
-
-    fill_random(rnd, A, Ad, bm, bk, K);
-    fill_random(rnd, B, Bd, bn, bk, K);
-    C.fill(numeric_limits<c_float_type>::quiet_NaN());
-
-    // Creating the kernel
-    kernel<void(buffer<a_float_type> & A, buffer<b_float_type> & B, buffer<c_float_type> & C)> multiply;
-
     if (USE_WORKGROUP_MATRIX)
     {
         // Using workgroup-matrix multiplication.
+        assert((K / bk) % 4 == 0); // Required for the mbarrier synchronization mechanism.
 
-        multiply.assign(
+        return kernel(
             device,
             [bm, bn, bk, use_bulk_copy](
                 resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
@@ -552,14 +464,14 @@ try
                              COL_MAJOR_C() ? M() : N());
                 });
             },
-            WORKGROUP_MATRIX_LOCAL_SIZE(),
+            ls,
             0);
     }
     else
     {
         // Register-only matrix multiplication.
 
-        multiply.assign(
+        return kernel(
             device, [bm, bn, bk](resource<a_float_type>& A, resource<b_float_type>& B, resource<c_float_type>& C) {
                 gpu_for_group(0, (M / bm) * (N / bn), [&](gpu_uint block) {
                     gpu_uint block_m = block / (N / bn);
@@ -618,6 +530,101 @@ try
                 });
             });
     }
+}
+
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+void run_with_types(goopax_device device)
+try
+{
+    cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
+         << ", T_B=" << type_name(type_enum<b_float_type>::value)
+         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
+
+    // Choosing suitable matrix block sizes.
+    // Larger values can improve performance, but only if there are
+    // enough registers available.
+
+    unsigned int bm;
+    unsigned int bn;
+    unsigned int bk;
+    if (USE_WORKGROUP_MATRIX)
+    {
+        bm = 256;
+        bn = 256;
+        bk = 16;
+        if (get_bits<c_float_type>::value >= 32)
+        {
+            bm = 128;
+            bn = 128;
+        }
+        if (get_bits<a_float_type>::value <= 8)
+        {
+            bk = 32;
+        }
+    }
+    else
+    {
+        bm = 64;
+        bn = 64;
+        bk = 16;
+        if (device.max_registers() < 80)
+        {
+            bm = 32;
+            bn = 32;
+        }
+        if (get_bits<a_float_type>::value == 8)
+        {
+            bk = 64;
+        }
+        if (get_bits<a_float_type>::value == 4)
+        {
+            bk = 64;
+            if (goopax_is_integral<a_float_type>::value)
+            {
+                bm = 64;
+                bn = 32;
+            }
+            else
+            {
+                bm = 64;
+                bn = 64;
+            }
+        }
+    }
+    if (BM())
+    {
+        bm = BM();
+    }
+    if (BN())
+    {
+        bn = BN();
+    }
+    if (BK())
+    {
+        bk = BK();
+    }
+
+    cout << "  bm=" << bm << ", bn=" << bn << ", bk=" << bk << endl;
+
+    // Matrix buffers
+    buffer<a_float_type> A(device, M * K);
+    buffer<b_float_type> B(device, K * N);
+    buffer<c_float_type> C(device, M * N);
+
+    // Matrix buffers for verification
+    buffer<c_float_type> Ad(device, M * K);
+    buffer<c_float_type> Bd(device, K * N);
+
+    // Filling with random numbers
+    std::random_device rd;
+    WELL512_data rnd(device, device.default_global_size_max(), rd());
+
+    fill_random(rnd, A, Ad, bm, bk, K);
+    fill_random(rnd, B, Bd, bn, bk, K);
+    C.fill(numeric_limits<c_float_type>::quiet_NaN());
+
+    // Creating the kernel
+    auto multiply = create_matmul_kernel<a_float_type, b_float_type, c_float_type>(device, bm, bn, bk);
 
     for (unsigned int count = 0; count < 3; ++count)
     {
@@ -629,9 +636,9 @@ try
 
         Tdouble time = duration_cast<duration<double>>(time_end - time_start).count();
         auto OPS = Tdouble(M()) * K() * N() * 2 / time;
-        cout << "Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS" << endl;
+        cout << "  Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS" << endl;
     }
-    cout << "verifying... " << flush;
+    cout << "  verifying... " << flush;
 
     VectorX<double> test_vector;
     {
@@ -664,7 +671,7 @@ try
 
     cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl;
 }
-catch (EX::unsupported& e)
+catch (EX::goopax_exception& e)
 {
     cout << "Got exception '" << e.what() << "'" << endl;
 }
@@ -692,6 +699,6 @@ int main(int argc, char** argv)
         run_with_types<precision::int4, precision::int4, Tint>(device);
         run_with_types<Tdouble, Tdouble, Tdouble>(device);
 
-        cout << endl << endl;
+        cout << endl;
     }
 }
