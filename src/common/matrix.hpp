@@ -427,8 +427,8 @@ create_matmul_kernel(goopax_device device,
                         {
                             // fp4e2m1 uses block scaling on Nvidia GPUs. Using factor 1 for simplicity, with
                             // block_width=32.
-                            matrix::warp_matrix<precision::fp8ue8m0> scale_a(mc.rows/mc.brows, ma.cols / 32);
-                            matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mc.cols/mc.bcols);
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_a(mc.rows / mc.brows, ma.cols / 32);
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mc.cols / mc.bcols);
                             scale_a.fill(static_cast<precision::fp8ue8m0>(1));
                             scale_b.fill(static_cast<precision::fp8ue8m0>(1));
                             mc.add_product(ma, mb, block_k % 2, scale_a, scale_b);
