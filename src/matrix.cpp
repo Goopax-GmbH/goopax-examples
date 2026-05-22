@@ -126,6 +126,15 @@ try
         {
             bk = 32;
         }
+        if (std::is_same_v<a_float_type, precision::fp4e2m1>)
+        {
+            bk = 64;
+        }
+        if (std::is_same_v<a_float_type, double>)
+        {
+            bm = 32;
+            bn = 32;
+        }
     }
     else
     {

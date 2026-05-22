@@ -214,6 +214,36 @@ struct workgroup_matrix_c
         tile += a * b;
     }
 
+    template<typename T_A, typename T_B, typename T_block>
+    void add_product(const workgroup_matrix_ab<T_A>& wa,
+                     const workgroup_matrix_ab<T_B>& wb,
+                     gpu_uint slot,
+                     const warp_matrix<T_block>& block_scaling_a,
+                     const warp_matrix<T_block>& block_scaling_b)
+    {
+        gpu_uint br = warp_id_in_group() / bcols;
+        gpu_uint bc = warp_id_in_group() % bcols;
+        warp_matrix<T_A> a;
+        if (wa.layout == row_major)
+        {
+            a = warp_matrix<T_A>(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows) * wa.cols, wa.layout);
+        }
+        else
+        {
+            a = warp_matrix<T_A>(rows / brows, wa.cols, wa.storage(slot) + br * (rows / brows), wa.layout, wa.rows);
+        }
+        warp_matrix<T_B> b;
+        if (wb.layout == col_major)
+        {
+            b = warp_matrix<T_B>(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols) * wb.rows, wb.layout);
+        }
+        else
+        {
+            b = warp_matrix<T_B>(wa.cols, cols / bcols, wb.storage(slot) + bc * (cols / bcols), wb.layout, wb.cols);
+        }
+        tile = multiply_add(a, b, tile, block_scaling_a, block_scaling_b);
+    }
+
     void fill(const typename make_gpu<T>::type& value)
     {
         tile.fill(value);
@@ -393,7 +423,20 @@ create_matmul_kernel(goopax_device device,
                         }
 
                         // Multiplying matrix tiles, adding the result.
-                        mc.add_product(ma, mb, block_k % 2);
+                        if constexpr (std::is_same_v<a_float_type, precision::fp4e2m1>)
+                        {
+                            // fp4e2m1 uses block scaling on Nvidia GPUs. Using factor 1 for simplicity, with
+                            // block_width=32.
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_a(mc.rows/mc.brows, ma.cols / 32);
+                            matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mc.cols/mc.bcols);
+                            scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+                            scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+                            mc.add_product(ma, mb, block_k % 2, scale_a, scale_b);
+                        }
+                        else
+                        {
+                            mc.add_product(ma, mb, block_k % 2);
+                        }
 
                         // Barrier needed to prevent overwriting data that is currently in use.
                         local_barrier(memory::threadgroup);
@@ -454,6 +497,8 @@ create_matmul_kernel(goopax_device device,
                         // Multiplying matrix tiles, adding the result.
                         if constexpr (std::is_same_v<a_float_type, precision::fp4e2m1>)
                         {
+                            // fp4e2m1 uses block scaling on Nvidia GPUs. Using factor 1 for simplicity, with
+                            // block_width=32.
                             matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
                             matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
                             scale_a.fill(static_cast<precision::fp8ue8m0>(1));
