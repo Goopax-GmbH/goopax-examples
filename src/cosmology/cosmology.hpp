@@ -433,6 +433,8 @@ struct Cosmos : public CosmosData<T>
 #elif MULTIPOLE_ORDER == 2
     using matter_multipole = multipole<T, T, T>;
     using force_multipole = multipole<T, T, T>;
+    using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float>;
+    using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #elif MULTIPOLE_ORDER == 3
     using matter_multipole = multipole<T, T, T, T>;
     using force_multipole = multipole<T, T, T, T>;

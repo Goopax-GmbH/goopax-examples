@@ -53,9 +53,10 @@ std::function<
     void(image_resource<2, Vector<Tuint8_t, 4>, true>& image, const complex<gpu_double> center, const gpu_float scale)>
 make_kernel_function(type_enum_t type)
 {
-    return [&type](image_resource<2, Vector<Tuint8_t, 4>, true>& image,
-                   const complex<gpu_double> center,
-                   const gpu_float scale) {
+    cout << "make_kernel_function. type=" << type_name(type) << endl;
+    return [type](image_resource<2, Vector<Tuint8_t, 4>, true>& image,
+                  const complex<gpu_double> center,
+                  const gpu_float scale) {
         gpu_for_global(0,
                        image.width() * image.height(),
                        [&](gpu_uint k) // Parallel loop over all image points
@@ -74,12 +75,10 @@ make_kernel_function(type_enum_t type)
                            gpu_while(iter < max_iter && norm(z) < 10.f)
                            {
                                int Ninner = 4;
-#if defined(__STDCPP_FLOAT16_T__)
-                               if (type == type_enum<std::float16_t>::value)
+                               if (type == type_enum<precision::fp16>::value)
                                {
                                    Ninner = 2;
                                }
-#endif
 
                                for (int k = 0; k < Ninner; ++k) // Inner loop to speed up things.
                                {

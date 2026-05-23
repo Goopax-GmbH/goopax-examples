@@ -70,21 +70,15 @@ int main(int argc, char** argv)
     const float dt = DT();
     const float mass = 1.0 / N;
 
-    unique_ptr<sdl_window> window = sdl_window::create("nbody",
-                                                       { 1024, 768 },
-                                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
-#if GOOPAX_VERSION_ID < 50802
-                                                       ,
-                                                       static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
-#endif
-    );
+    unique_ptr<sdl_window> window =
+        sdl_window::create("nbody", { 1024, 768 }, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     goopax_device device = window->device;
 
 #if WITH_METAL
     buffer<Vector3<float>> x(device, N);
     buffer<Vector3<float>> x2(device, N);
     particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
-#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+#elif WITH_VULKAN
 
     backend_create_params params = {
         .vulkan = { .usage_bits = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
@@ -207,7 +201,7 @@ int main(int argc, char** argv)
 
 #if WITH_METAL
         Renderer.render(x);
-#elif WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+#elif WITH_VULKAN
         Renderer.render(x, distance, theta);
 #else
         render(window->window, x);

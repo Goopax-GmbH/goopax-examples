@@ -557,14 +557,8 @@ int main(int argc, char** argv)
     }
     else
     {
-        unique_ptr<sdl_window> window = sdl_window::create("fmm nbody",
-                                                           { 1024, 768 },
-                                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
-#if GOOPAX_VERSION_ID < 50802
-                                                           ,
-                                                           static_cast<goopax::envmode>(env_ALL & ~env_VULKAN)
-#endif
-        );
+        unique_ptr<sdl_window> window =
+            sdl_window::create("fmm nbody", { 1024, 768 }, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 
         goopax_device device;
 
@@ -656,7 +650,7 @@ int main(int argc, char** argv)
                 initData.tmps.assign(device, num_particles);
             }
 #endif
-#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+#if WITH_VULKAN
             else if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
             {
                 backend_create_params params = {
@@ -789,7 +783,7 @@ int main(int argc, char** argv)
 
             cosmos.init(std::move(initData));
 
-#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+#if WITH_VULKAN
             if (auto* v = dynamic_cast<sdl_window_vulkan*>(&*window))
             {
                 vulkanRenderer = make_unique<goopax_draw::vulkan::Renderer>(
@@ -1058,7 +1052,7 @@ int main(int argc, char** argv)
                     }
 #endif
 
-#if WITH_VULKAN && GOOPAX_VERSION_ID >= 50802
+#if WITH_VULKAN
                     else if (vulkanRenderer.get())
                     {
                         if (device.get_envmode() == env_CUDA)
