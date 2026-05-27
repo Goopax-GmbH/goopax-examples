@@ -458,6 +458,9 @@ struct Cosmos : public CosmosData<T>
     using gpu_matter_multipole = typename make_gpu<matter_multipole>::type;
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
 
+    static_assert(sizeof(matter_multipole) % 16 == 0);
+    static_assert(sizeof(force_multipole) % 16 == 0);
+
     goopax_device device;
     const Tuint max_particles;
     using gpu_T = typename make_gpu<T>::type;
@@ -2219,9 +2222,10 @@ struct Cosmos : public CosmosData<T>
                                              * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
                                                 * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
-                                    P1[k] += cond(dist.squaredNorm() == 0,
-                                                  0.f,
-                                                  -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
+                                    gpu_if(dist.squaredNorm() != 0)
+                                    {
+                                        P1[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
+                                    }
                                 }
                                 ++other_p;
                                 gpu_while(other_p == other_pend)
@@ -2274,9 +2278,10 @@ struct Cosmos : public CosmosData<T>
                                              * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
                                                 * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
-                                    P2[k] += cond(dist.squaredNorm() == 0,
-                                                  0.f,
-                                                  -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
+                                    gpu_if(dist.squaredNorm() != 0)
+                                    {
+                                        P2[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
+                                    }
                                 }
                                 ++other_p;
                                 gpu_while(other_p == other_pend)
@@ -2650,7 +2655,7 @@ struct Cosmos : public CosmosData<T>
             });
         }));
 
-        cout << "Waiting for kernels to be created. This may take a few minutes." << endl;
+        cout << "Waiting for kernels to be created. This may take several minutes." << endl;
 
         while (!futures.empty())
         {
