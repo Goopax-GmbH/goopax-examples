@@ -98,8 +98,8 @@ endif()
 
 ExternalProject_Add(
   build_boost
-  URL https://github.com/boostorg/multiprecision/archive/refs/tags/Boost_1_91_0.zip
-  URL_HASH SHA256=D5558CD419C8D46BDC958064CB97F963D1EA793866414C025906EC15033512ED
+  URL https://github.com/boostorg/multiprecision/archive/refs/tags/Boost_1_89_0.zip
+  URL_HASH SHA256=2f1ff3b64142be6758fd9b18a71ca1d1d4b0f68688c2e3f165f31be4ac1b9ff5
   EXCLUDE_FROM_ALL 1
   CONFIGURE_COMMAND ""
   INSTALL_COMMAND ""
