@@ -9,6 +9,7 @@
 #include <chrono>
 #include <goopax>
 #include <goopax_draw/types.h>
+#include <goopax_extra/output.hpp>
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/random.hpp>
 #include <goopax_extra/types.hpp>
@@ -18,6 +19,8 @@ using namespace Eigen;
 using namespace std::chrono;
 using namespace goopax;
 using namespace std;
+
+PARAMOPT<bool> VERB("verb", 0);
 
 // Matrix sizes. Can be specified as command line arguments. See matmul --help
 PARAMOPT<unsigned int> M("m", 4096);
@@ -34,9 +37,6 @@ PARAMOPT<bool> COL_MAJOR_A("col_major_a", false);
 PARAMOPT<bool> COL_MAJOR_B("col_major_b", true);
 PARAMOPT<bool> COL_MAJOR_C("col_major_c", false);
 
-// If true, matrix multiplication will be done on workgroup level, reducing memory bandwidth.
-PARAMOPT<bool> USE_WORKGROUP_MATRIX("use_workgroup_matrix", true);
-
 // Use tiled matrix storage for A and B matrices. Must be set to true if USE_WORKGROUP_MATRIX is true.
 PARAMOPT<bool> REARRANGE("rearrange", true);
 
@@ -52,20 +52,31 @@ PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 0);
   But since we are only calling this kernel once or twice, it shouldn't matter here.
 */
 template<typename a_float_type, typename c_float_type>
-void fill_random(WELL512_data& rnd,
-                 buffer<a_float_type>& a,
+void fill_random(buffer<a_float_type>& a,
                  buffer<c_float_type>& ad,
                  unsigned int brows,
                  unsigned int bcols,
-                 unsigned int cols)
+                 unsigned int cols,
+                 matrix::matrix_support_info::sparse_t sparse_mode = matrix::matrix_support_info::sparse_t())
 {
+    goopax_device device = a.get_device();
+
+    std::random_device rd;
+    WELL512_data rnd(device, device.default_global_size_max(), rd());
+
     kernel fill_random(
-        a.get_device(),
-        [&rnd](resource<a_float_type>& a, resource<c_float_type>& ad, gpu_uint brows, gpu_uint bcols, gpu_uint cols) {
+        device,
+        [&rnd, sparse_mode](
+            resource<a_float_type>& a, resource<c_float_type>& ad, gpu_uint brows, gpu_uint bcols, gpu_uint cols) {
             WELL512_lib rndlib(rnd);
 
             // Parallelizing memory access such that it is compatible with sub_byte_pointer access for int4.
             unsigned int par = max(32u / static_cast<unsigned int>(bitsize<a_float_type>::value), 1u);
+            if (sparse_mode.is_sparse())
+            {
+                par = sparse_mode.blocksize;
+            }
+
             gpu_for_global(0, a.size(), par, [&](gpu_uint k) {
                 auto pd = ad.begin() + k;
                 auto p = a.begin() + k;
@@ -78,18 +89,28 @@ void fill_random(WELL512_data& rnd,
                         + row / brows * brows * cols;
                 }
 
+                gpu_uint nonnull_bits = (1 << sparse_mode.blocksize / sparse_mode.vector_width) - 1;
+                gpu_while(popcount(nonnull_bits) != sparse_mode.non_null_per_block / sparse_mode.vector_width)
+                {
+                    nonnull_bits = rndlib.generate()[0] & ((1 << sparse_mode.blocksize / sparse_mode.vector_width) - 1);
+                }
+
                 for (unsigned int sub = 0; sub < par; ++sub)
                 {
+                    gpu_float v = rndlib.gaussian_distribution();
+
+                    gpu_if((nonnull_bits & (1 << (sub % sparse_mode.blocksize) / sparse_mode.vector_width)) == 0)
+                    {
+                        v = 0;
+                    }
                     if constexpr (std::is_same_v<typename make_cpu<a_float_type>::type, precision::tf32>)
                     {
-                        gpu_float v = rndlib.gaussian_distribution();
                         pd[sub] = v;
                         p[sub] = static_cast<typename make_gpu<a_float_type>::type>(v);
                     }
                     else
                     {
-                        pd[sub] = p[sub] =
-                            static_cast<typename make_gpu<a_float_type>::type>(rndlib.gaussian_distribution());
+                        pd[sub] = p[sub] = static_cast<typename make_gpu<a_float_type>::type>(v);
                     }
                 }
             });
@@ -97,14 +118,58 @@ void fill_random(WELL512_data& rnd,
     fill_random(a, ad, brows, bcols, cols);
 }
 
-template<typename a_float_type, typename b_float_type, typename c_float_type>
-void run_with_types(goopax_device device)
+template<typename A_SRC, typename A_SP>
+void compress_and_create_metadata(const buffer<A_SRC>& A,
+                                  buffer<A_SP>& Asp,
+                                  buffer<unsigned int>& md,
+                                  const matrix::matrix_support_info& mi,
+                                  unsigned int M,
+                                  unsigned int K,
+                                  unsigned int bm,
+                                  unsigned int bk,
+                                  bool rearrange,
+                                  unsigned int ls)
+{
+    Asp.assign(A.get_device(), A.size() / mi.sparse_a.sparsity());
+
+    kernel prog(A.get_device(), [&](resource<unsigned int>& mdres) {
+        unsigned int brows = matrix::warpgroup_rows(ls, mi.Nthreads);
+
+        gpu_for_group(0, M * brows / bm * K / bk, [&](gpu_uint block) {
+            gpu_uint brow = block / brows / (K / bk);
+            gpu_uint bcol = block / brows % (K / bk);
+            gpu_uint br = block % brow;
+
+            matrix::sparse_matrix<A_SP> mat(bm / brows, bk, mi);
+
+            if (rearrange)
+            {
+                mat.load_cast_construct_from_dense(const_resource(A).begin() + block * bk * (bm / brows));
+                mat.store(resource(Asp).begin() + block * bk * (bm / brows) / mi.sparse_a.sparsity(),
+                          matrix::row_major);
+            }
+            else
+            {
+                assert(brows == 1);
+                mat.load_cast_construct_from_dense(const_resource(A).begin() + brow * K * bm + bcol * bk, K);
+                mat.store(resource(Asp).begin() + (brow * K * bm + bcol * bk) / mi.sparse_a.sparsity(),
+                          matrix::row_major,
+                          K / mi.sparse_a.sparsity());
+            }
+
+            mat.store_metadata(mdres.begin() + block * mat.sparse_metadata().size() * local_size());
+            md.assign(A.get_device(),
+                      M / bm * K / bk * mat.sparse_metadata().size() * mi.Nthreads
+                          * matrix::warpgroup_rows(ls, mi.Nthreads));
+        });
+    });
+    prog(md);
+}
+
+template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse>
+void run(goopax_device device, bool use_workgroup_matrix)
 try
 {
-    cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
-         << ", T_B=" << type_name(type_enum<b_float_type>::value)
-         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
-
     // Choosing suitable matrix block sizes.
     // Larger values can improve performance, but only if there are
     // enough registers available.
@@ -112,11 +177,14 @@ try
     unsigned int bm;
     unsigned int bn;
     unsigned int bk;
-    if (USE_WORKGROUP_MATRIX)
+    unsigned int ls;
+
+    if (use_workgroup_matrix)
     {
         bm = 256;
         bn = 256;
         bk = 16;
+        ls = 256;
         if (bitsize<c_float_type>::value >= 32)
         {
             bm = 128;
@@ -141,6 +209,8 @@ try
         bm = 64;
         bn = 64;
         bk = 16;
+        ls = device.default_local_size();
+
         if (device.max_registers() < 80)
         {
             bm = 32;
@@ -165,6 +235,19 @@ try
             }
         }
     }
+    if (is_sparse)
+    {
+        if (bitsize<c_float_type>::value == 16 && bitsize<a_float_type>::value == 16)
+        {
+        }
+        else if (bitsize<a_float_type>::value == 32)
+        {
+        }
+        else
+        {
+            bk *= 2;
+        }
+    }
     if (BM())
     {
         bm = BM();
@@ -177,11 +260,46 @@ try
     {
         bk = BK();
     }
+    if (LOCAL_SIZE)
+    {
+        ls = LOCAL_SIZE;
+    }
 
-    cout << "  bm=" << bm << ", bn=" << bn << ", bk=" << bk << endl;
+    const matrix::matrix_support_info* mi = nullptr;
+    if constexpr (is_sparse)
+    {
+        for (auto* mi2 = device.get_matrix_support_table(); mi2; mi2 = mi2->next)
+        {
+            if (mi2->type_enum_a == type_enum<a_float_type>::value && mi2->type_enum_b == type_enum<b_float_type>::value
+                && mi2->type_enum_c == type_enum<c_float_type>::value && mi2->is_sparse()
+                && (mi2->with_block_scaling() == std::is_same_v<a_float_type, precision::fp4e2m1>)
+                && bm % mi2->mnk[0] == 0 && bn % mi2->mnk[1] == 0 && bk % mi2->mnk[2] == 0)
+            {
+                mi = mi2;
+                break;
+            }
+        }
+        if (mi == nullptr)
+        {
+            return;
+        }
+    }
+
+    cout << "  use_workgroup_matrix=" << use_workgroup_matrix << ". bm=" << bm << ", bn=" << bn << ", bk=" << bk
+         << ", ls=" << ls;
+    if (is_sparse)
+    {
+        if (mi)
+        {
+            cout << ", sparse: " << mi->sparse_a;
+        }
+    }
+    cout << endl;
 
     // Matrix buffers
-    buffer<a_float_type> A(device, M * K);
+    buffer<typename std::conditional<std::is_same_v<a_float_type, precision::tf32> && is_sparse, float, a_float_type>::
+               type>
+        A(device, M * K);
     buffer<b_float_type> B(device, K * N);
     buffer<c_float_type> C(device, M * N);
 
@@ -190,29 +308,35 @@ try
     buffer<c_float_type> Bd(device, K * N);
 
     // Filling with random numbers
-    std::random_device rd;
-    WELL512_data rnd(device, device.default_global_size_max(), rd());
-
     if (COL_MAJOR_A)
     {
-        fill_random(rnd, A, Ad, bk, bm, M);
+        fill_random(A, Ad, bk, bm, M, is_sparse ? mi->sparse_a : matrix::matrix_support_info::sparse_t());
     }
     else
     {
-        fill_random(rnd, A, Ad, bm, bk, K);
+        fill_random(A, Ad, bm, bk, K, is_sparse ? mi->sparse_a : matrix::matrix_support_info::sparse_t());
     }
     if (COL_MAJOR_B)
     {
-        fill_random(rnd, B, Bd, bn, bk, K);
+        fill_random(B, Bd, bn, bk, K);
     }
     else
     {
-        fill_random(rnd, B, Bd, bk, bn, N);
+        fill_random(B, Bd, bk, bn, N);
     }
     C.fill(numeric_limits<c_float_type>::quiet_NaN());
 
+    buffer<a_float_type> Asp;
+    buffer<unsigned int> sparse_metadata;
+
+    if constexpr (is_sparse)
+    {
+        compress_and_create_metadata(A, Asp, sparse_metadata, *mi, M, K, bm, bk, REARRANGE, ls);
+    }
+
     // Creating the kernel
-    auto multiply = create_matmul_kernel<a_float_type, b_float_type, c_float_type>(
+
+    auto multiply = goopax::matrix::create_matmul_kernel<a_float_type, b_float_type, c_float_type, is_sparse>(
         device,
         M,
         N,
@@ -220,26 +344,35 @@ try
         bm,
         bn,
         bk,
-        USE_WORKGROUP_MATRIX,
+        use_workgroup_matrix,
         REARRANGE,
-        LOCAL_SIZE,
+        ls,
         COL_MAJOR_A ? matrix::col_major : matrix::row_major,
         COL_MAJOR_B ? matrix::col_major : matrix::row_major,
-        COL_MAJOR_C ? matrix::col_major : matrix::row_major);
+        COL_MAJOR_C ? matrix::col_major : matrix::row_major,
+        mi);
 
     for (unsigned int count = 0; count < 3; ++count)
     {
         device.wait_all();
 
         auto time_start = steady_clock::now();
-        multiply(A, B, C).wait();
+        if constexpr (is_sparse)
+        {
+            multiply(Asp, B, C, sparse_metadata).wait();
+        }
+        else
+        {
+            multiply(A, B, C).wait();
+        }
         auto time_end = steady_clock::now();
 
         Tdouble time = duration_cast<duration<double>>(time_end - time_start).count();
         auto OPS = Tdouble(M()) * K() * N() * 2 / time;
-        cout << "  Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS" << endl;
+        cout << "    Did matrix multiplication in " << time << " seconds. Performance: " << OPS / 1E12 << " TOPS"
+             << endl;
     }
-    cout << "  verifying... " << flush;
+    cout << "    verifying... " << flush;
 
     VectorX<double> test_vector;
     {
@@ -270,11 +403,36 @@ try
     VectorX<double> rwant = TA * (TB * test_vector);
     VectorX<double> rhave = TC.template cast<double>() * test_vector;
 
-    cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl;
+    if (VERB)
+    {
+        cout << "A=\n" << TA << endl;
+        cout << "B=\n" << TB << endl;
+        cout << "C=\n" << TC << endl;
+        MatrixX<double> TC_cpu = TA * TB;
+        cout << "Ccpu=\n" << TC_cpu << endl;
+        cout << "diff=\n" << TC - TC_cpu << endl;
+    }
+    cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl << endl;
 }
 catch (EX::goopax_exception& e)
 {
     cout << "Got exception '" << e.what() << "'" << endl;
+}
+
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+void run_with_types(goopax_device device)
+{
+    cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
+         << ", T_B=" << type_name(type_enum<b_float_type>::value)
+         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
+    run<a_float_type, b_float_type, c_float_type, false>(device, false);
+    run<a_float_type, b_float_type, c_float_type, false>(device, true);
+    if constexpr (!std::is_same_v<a_float_type, double>)
+    {
+        run<a_float_type, b_float_type, c_float_type, true>(device, false);
+        run<a_float_type, b_float_type, c_float_type, true>(device, true);
+    }
+    cout << endl;
 }
 
 int main(int argc, char** argv)
@@ -290,10 +448,10 @@ int main(int argc, char** argv)
         run_with_types<Thalf, Thalf, Thalf>(device);
         run_with_types<Thalf, Thalf, Tfloat>(device);
         run_with_types<Tbfloat16, Tbfloat16, Tfloat>(device);
-        // run_with_types<Tfloat, Tfloat, Tfloat>(device);
+        run_with_types<Tfloat, Tfloat, Tfloat>(device);
         run_with_types<precision::fp8e4m3, precision::fp8e5m2, Tfloat>(device);
-        run_with_types<precision::fp8e3m2, precision::fp8e2m3, Tfloat>(device);
-        run_with_types<precision::fp8e2m1, precision::fp8e2m1, Tfloat>(device);
+        // run_with_types<precision::fp8e3m2, precision::fp8e2m3, Tfloat>(device);
+        // run_with_types<precision::fp8e2m1, precision::fp8e2m1, Tfloat>(device);
         run_with_types<precision::fp4e2m1, precision::fp4e2m1, Tfloat>(device);
         run_with_types<Ttf32, Ttf32, Tfloat>(device);
         run_with_types<Tint8_t, Tint8_t, Tint>(device);
