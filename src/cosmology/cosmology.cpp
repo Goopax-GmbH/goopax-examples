@@ -576,6 +576,13 @@ int main(int argc, char** argv)
         {
             device = window->device;
         }
+        
+        cout << "device.max_registers()=" << device.max_registers() << endl;
+        if (device.max_registers() < 220)
+        {
+            cout << "cosmology is optimised for GPUs with 256 registers per thread. It will perform poorly on other devices. If you think you know what you are doign, remove this exit(1) call and proceed at your own risk." << endl;
+            exit(1);
+        }
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
