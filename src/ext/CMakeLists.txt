@@ -2,20 +2,14 @@ add_custom_target(build_external_libraries)
 include(ExternalProject)
 
 set(MY_OPENCV_ARGS "-DOpenCV_STATIC=ON")
-if (WIN32 OR ANDROID)
-  set(MY_OPENCV_URL https://github.com/opencv/opencv/archive/refs/tags/4.12.0.zip)
-  set(MY_OPENCV_URL_HASH SHA256=FA3FAF7581F1FA943C9E670CF57DD6BA1C5B4178F363A188A2C8BFF1EB28B7E4)
-else ()
-  set(MY_OPENCV_URL https://github.com/opencv/opencv/archive/refs/tags/4.10.0.zip)
-  set(MY_OPENCV_URL_HASH SHA256=3810bca2b1d1c572912df0ac3888126341f3762dfd28e91068c805fb656d0e51)
-endif()
+set(MY_OPENCV_URL https://github.com/opencv/opencv/archive/refs/tags/4.13.0.zip)
+set(MY_OPENCV_URL_HASH SHA256=431CB489D275DA26526581C6735D7D7C0B00F190FE940B3217D386B77AEF52C7)
+set(MY_SDL_GIT_TAG release-3.4.8)
 if (ANDROID)
-  set(MY_SDL_GIT_TAG release-3.2.18)
   set(MY_SDL_ARGS
     "-DSDL_SHARED=1"
     "-DSDL_STATIC=0")
 else ()
-  set(MY_SDL_GIT_TAG release-3.2.4)
   set(MY_SDL_ARGS
     "-DSDL_SHARED=0"
     "-DSDL_STATIC=1")
@@ -52,7 +46,6 @@ elseif (ANDROID OR IOS)
     list(APPEND MY_CMAKE_ARGS
       -G Xcode
       -DCMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET=${CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET})
-    set(MY_SDL_GIT_TAG 8f9a562969761ec626d298079c99341fd25b4644)
   endif()
 endif()
 
@@ -105,8 +98,8 @@ endif()
 
 ExternalProject_Add(
   build_boost
-  URL https://github.com/boostorg/multiprecision/archive/refs/tags/Boost_1_86_0.zip
-  URL_HASH SHA256=855BD78A1A4EE18BFB385ACA54C153B55E4C97A137604BE951208B144DF7E3BD
+  URL https://github.com/boostorg/multiprecision/archive/refs/tags/Boost_1_91_0.zip
+  URL_HASH SHA256=D5558CD419C8D46BDC958064CB97F963D1EA793866414C025906EC15033512ED
   EXCLUDE_FROM_ALL 1
   CONFIGURE_COMMAND ""
   INSTALL_COMMAND ""
@@ -119,7 +112,7 @@ endif()
 ExternalProject_Add(
   build_eigen
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-  GIT_TAG 3.4.0
+  GIT_TAG 3.4.1
   EXCLUDE_FROM_ALL 1
   CMAKE_ARGS "${MY_CMAKE_ARGS}"
   "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/eigen"
@@ -131,8 +124,8 @@ endif()
 
 ExternalProject_Add(
   build_glm
-  URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.tar.gz
-  URL_HASH SHA256=9f3174561fd26904b23f0db5e560971cbf9b3cbda0b280f04d5c379d03bf234c
+  URL https://github.com/g-truc/glm/archive/refs/tags/1.0.3.tar.gz
+  URL_HASH SHA256=6775E47231A446FD086D660ECC18BCD076531CFEDD912FBD66E576B118607001
   EXCLUDE_FROM_ALL 1
   CMAKE_ARGS "${MY_CMAKE_ARGS};-DGLM_BUILD_LIBRARY=0;-DGLM_BUILD_TESTS=0"
   "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/glm"
@@ -145,7 +138,7 @@ endif()
 ExternalProject_Add(
   build_glatter
   GIT_REPOSITORY https://github.com/imakris/glatter.git
-  GIT_TAG 886f9765c6553ecb0934b5ec187db7d57ab0cfbc
+  GIT_TAG v1.0.1
   EXCLUDE_FROM_ALL 1
   CONFIGURE_COMMAND ""
   INSTALL_COMMAND ""
