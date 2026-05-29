@@ -1,5 +1,5 @@
 /**
-   \example matmul.cpp
+   \example matrix.cpp
    matrix multiplication example program, demonstrating the
    use of tensor core hardware acceleration
  */
@@ -22,7 +22,7 @@ using namespace std;
 
 PARAMOPT<bool> VERB("verb", 0);
 
-// Matrix sizes. Can be specified as command line arguments. See matmul --help
+// Matrix sizes. Can be specified as command line arguments. See matrix --help
 PARAMOPT<unsigned int> M("m", 4096);
 PARAMOPT<unsigned int> N("n", 4096);
 PARAMOPT<unsigned int> K("k", 4096);
