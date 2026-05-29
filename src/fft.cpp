@@ -22,12 +22,14 @@ struct fftdata
     buffer<Vector<uint8_t, 3>> inputbuf;
     buffer<complex<Tfloat>> tmp1;
     buffer<complex<Tfloat>> tmp2;
+    buffer<Vector<Tfloat, 3>> outputbuf;
 
     array<kernel<void(const buffer<Vector<uint8_t, 3>>& input)>, 3> fft_x;
     kernel<void()> fft_y;
     kernel<void()> adjust_phase;
     kernel<void()> ifft_y;
-    array<kernel<void(image_buffer<2, Vector<Tuint8_t, 4>, true>& frame)>, 3> ifft_x;
+    array<kernel<void()>, 3> ifft_x;
+    kernel<void(image_buffer<2, Vector<Tuint8_t, 4>, true>& frame)> write_image;
 
     void render(image_buffer<2, Vector<Tuint8_t, 4>, true>& drawimage)
     {
@@ -37,8 +39,9 @@ struct fftdata
             fft_y();
             adjust_phase();
             ifft_y();
-            ifft_x[channel](drawimage);
+            ifft_x[channel]();
         }
+        write_image(drawimage);
     }
 
     static void show_primes(unsigned int width)
@@ -67,6 +70,7 @@ struct fftdata
         , inputbuf(device, size[0] * size[1])
         , tmp1(device, size[0] * size[1])
         , tmp2(device, size[0] * size[1])
+        , outputbuf(device, size[0] * size[1])
 
     {
         for (unsigned int channel = 0; channel < 3; ++channel)
@@ -125,28 +129,36 @@ struct fftdata
 
         for (unsigned int channel = 0; channel < 3; ++channel)
         {
-            ifft_x[channel].assign(device, [this, channel](image_resource<2, Vector<Tuint8_t, 4>, true>& frame) {
+            ifft_x[channel].assign(device, [this, channel]() {
                 const unsigned int ls = min(local_size(), ((size[0] ^ (size[0] - 1)) + 1) / 2);
-                gpu_uint lid = global_id() % ls;
                 gpu_uint gid = global_id() / ls;
                 const unsigned int ng = global_size() / ls;
 
                 gpu_for(gid, size[1], ng, [&](gpu_uint y) {
                     ifft_workgroup<gpu_float>([&](gpu_uint x) { return this->tmp1[y * size[0] + x]; },
                                               [&](gpu_uint x, complex<gpu_float> value) {
-                                                  Vector<gpu_float, 4> c = frame.read({ x, y });
-                                                  c[swap_RB ? 2 - channel : channel] = value.real();
-                                                  if (channel == 2)
-                                                  {
-                                                      c[3] = 1;
-                                                  }
-                                                  frame.write({ x, y }, c);
+                                                  this->outputbuf[y * size[0] + x][channel] = value.real();
                                               },
                                               size[0],
                                               ls);
                 });
             });
         }
+
+        write_image.assign(device, [this](image_resource<2, Vector<Tuint8_t, 4>, true>& frame) {
+            gpu_for_group(0, size[1], [&](gpu_uint y) {
+                gpu_for_local(0, size[0], [&](gpu_uint x) {
+                    const Vector<gpu_float, 3>& rgb = this->outputbuf[y * size[0] + x];
+                    Vector<gpu_float, 4> c;
+                    for (unsigned int channel = 0; channel < 3; ++channel)
+                    {
+                        c[swap_RB ? 2 - channel : channel] = rgb[channel];
+                    }
+                    c[3] = 1;
+                    frame.write({ x, y }, c);
+                });
+            });
+        });
 
         adjust_phase.assign(device, [this]() {
             gpu_for_group(0, size[1], [&](gpu_uint y) {
