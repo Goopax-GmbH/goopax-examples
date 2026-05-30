@@ -1,36 +1,6 @@
 #pragma once
 #include <goopax>
 
-namespace goopax
-{
-template<typename T>
-gpu_ostream& operator<<(gpu_ostream& s, const std::vector<T>& v)
-{
-    s << "[";
-    for (uint k = 0; k < v.size(); ++k)
-    {
-        if (k != 0)
-            s << ", ";
-        s << v[k];
-    }
-    s << "]";
-    return s;
-}
-template<typename T>
-gpu_ostream& operator<<(gpu_ostream& s, const std::span<T>& v)
-{
-    s << "[";
-    for (uint k = 0; k < v.size(); ++k)
-    {
-        if (k != 0)
-            s << ", ";
-        s << v[k];
-    }
-    s << "]";
-    return s;
-}
-}
-
 namespace goopax::matrix
 {
 
@@ -399,7 +369,6 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
 
     const bool use_bulk_copy = get_current_build_device().support_bulk_copy();
 
-    // unsigned int Nthreads = .default_local_size();
     unsigned int sparsity = (mi ? mi->sparse_a.sparsity() : 1u);
 
     if (use_workgroup_matrix)
@@ -426,17 +395,10 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
             if (mi)
             {
                 sparse_matrix<a_float_type> a(bm / warpgroup_rows(local_size(), mi->Nthreads), bk, *mi);
-                // warp_matrix<b_float_type> b(mb.rows, mb.cols);
-                // warp_matrix<c_float_type> c(mc.rows, mc.cols);
-                // multiply_add(a, b, c);
                 sparse_params_per_workgroup =
                     a.sparse_metadata().size() * mi->Nthreads * warpgroup_rows(local_size(), mi->Nthreads);
                 assert(sparse_params_per_workgroup != 0);
             }
-
-            // unsigned int num_blocks_m = ...;
-            // unsigned int num_blocks_n = ...;
-            // local_mem<unsigned int> sparse_md(sparse_params_per_block);
 
             auto load_data = [&](gpu_uint block_k) {
                 gpu_uint koff = block_k * bk;
@@ -548,8 +510,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                     // block_width=32.
                     matrix::warp_matrix<precision::fp8ue8m0> scale_a(mc.rows / mc.brows, ma.cols / 32);
                     matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mc.cols / mc.bcols);
-                    scale_a.fill(static_cast<precision::fp8ue8m0>(1));
-                    scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+                    scale_a.fill(1);
+                    scale_b.fill(1);
                     mc.add_product(ma, mb, block_k % 2, scale_a, scale_b);
                 }
                 else
@@ -623,8 +585,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                         // block_width=32.
                         matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
                         matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
-                        scale_a.fill(static_cast<precision::fp8ue8m0>(1));
-                        scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+                        scale_a.fill(1);
+                        scale_b.fill(1);
                         mc = multiply_add(ma, mb, mc, scale_a, scale_b);
                     }
                     else
@@ -654,8 +616,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                         // block_width=32.
                         matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
                         matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
-                        scale_a.fill(static_cast<precision::fp8ue8m0>(1));
-                        scale_b.fill(static_cast<precision::fp8ue8m0>(1));
+                        scale_a.fill(1);
+                        scale_b.fill(1);
                         mc = multiply_add(ma, mb, mc, scale_a, scale_b);
                     }
                     else
@@ -672,6 +634,23 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
     }
 }
 
+/**
+   This function creates a suitable kernel to multiply big matrices.
+
+   \tparam is_sparse If true, matrix A is a sparse matrix.
+   \param device goopax device
+   \param M,N,K Matrix sizes
+   \param bm,bn,bk Sizes of the matrix tiles
+   \param use_workgroup_matrix If true, multiple warps will work together and share data via local memory.
+   \param rearrange Assume matrices A and B are stored in a tiled layout. This significantly increases performance.
+   Required if use_workgroup_matrix==true.
+   \param ls workgroup size to use when using warpgroup matrix mode.
+   \param layout_a,layout_b,layout_c matrix layouts. Should be row_major for matrices A and C, and col_major for matrix
+   B for best performance.
+   \param mi matrix mode to use. Required for sparse matrices.
+
+   \sa matrix.cpp
+ */
 template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse>
 auto create_matmul_kernel(goopax_device device,
                           unsigned int M,

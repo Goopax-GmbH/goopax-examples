@@ -62,6 +62,10 @@ endif()
 if (GLATTER_INCLUDE_DIR)
   add_library(glatter INTERFACE)
   target_include_directories(glatter SYSTEM INTERFACE "${GLATTER_INCLUDE_DIR}")
+  # glatter >= 1.0.x defaults to a compiled translation unit (requires linking
+  # src/glatter/glatter.c). Force the header-only C++ mode so no separate
+  # library needs to be built or linked.
+  target_compile_definitions(glatter INTERFACE GLATTER_HEADER_ONLY=1)
 endif()
 if (BOOST_INCLUDE_DIR)
   add_library(boost INTERFACE)
