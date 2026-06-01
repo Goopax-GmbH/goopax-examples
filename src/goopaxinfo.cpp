@@ -78,6 +78,12 @@ int main()
                      << "    cache_line=" << d.cache_line() << endl
                      << "    cache_size=" << d.cache_size() << endl
                      << "    registers: " << d.max_registers() << endl;
+                cout << "    support_host_ptr: " << d.support_host_ptr();
+                if (d.support_host_ptr())
+                {
+                    cout << " (min alignment: " << d.min_host_ptr_alignment() << ")";
+                }
+                cout << endl;
                 cout << "    supported types:";
                 const char* delim = " ";
 
