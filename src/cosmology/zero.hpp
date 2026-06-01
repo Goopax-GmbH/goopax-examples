@@ -1,5 +1,6 @@
 #pragma once
 #include <goopax>
+#include <ranges>
 
 #if __cpp_concepts >= 201907
 
@@ -72,12 +73,14 @@ zero_initializer::operator T() const
     {
         return T::zero();
     }
+#if __cpp_lib_ranges >= 201911L
     else if constexpr (std::ranges::input_range<T>)
     {
         T ret;
         std::fill(ret.begin(), ret.end(), *this);
         return ret;
     }
+#endif
     else
     {
         static_assert(false, "Cannot find appropriate method to set to zero.");

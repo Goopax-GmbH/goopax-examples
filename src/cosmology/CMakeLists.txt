@@ -4,7 +4,10 @@ find_package(HDF5)
 
 
 check_cxx_source_compiles([[
+#include <ranges>
 static_assert(__cpp_concepts >= 201907);
+static_assert(__cpp_lib_ranges >= 201911);
+
 int main(){}
 ]] HAVE_CONCEPTS)
 
@@ -14,7 +17,7 @@ if (HAVE_CONCEPTS)
   add_sdl_main(cosmology goopax_draw)
   message("building cosmology")
 else()
-  message("not building cosmology: requires concepts")
+  message("not building cosmology: requires concepts and ranges")
 endif()
 
 if (TARGET cosmology)
