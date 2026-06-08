@@ -1,5 +1,7 @@
 include(CheckCXXSourceCompiles)
 
+add_subdirectory(MUSIC2)
+
 find_package(HDF5)
 
 
