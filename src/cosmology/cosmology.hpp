@@ -1,5 +1,5 @@
 #define WITH_TIMINGS 0
-#define PERFORMANCE_RUN 1
+#define PERFORMANCE_RUN 0
 
 #if WITH_OPENCV
 #include <opencv2/opencv.hpp>
