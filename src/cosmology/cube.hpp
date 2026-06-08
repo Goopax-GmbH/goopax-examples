@@ -1,108 +1,71 @@
 #include <Eigen/Dense>
 
+// Gravitational potential and field of a homogeneous (solid) cube, evaluated by
+// inclusion-exclusion over the 8 corners of the box relative to the field point.
+//
+// These are the standard "Nagy" prism formulas. For the antiderivative
+//   F = yz ln(x+r) + xz ln(y+r) + xy ln(z+r)
+//       - x^2/2 atan(yz/(xr)) - y^2/2 atan(xz/(yr)) - z^2/2 atan(xy/(zr))
+// (with r = sqrt(x^2+y^2+z^2)) the field components are the closed-form
+//   dF/dx = y ln(z+r) + z ln(y+r) - x atan(yz/(xr))
+//   dF/dy = z ln(x+r) + x ln(z+r) - y atan(xz/(yr))
+//   dF/dz = x ln(y+r) + y ln(x+r) - z atan(xy/(zr))
+// Terms that vanish under the alternating 8-corner sum are intentionally
+// dropped, which keeps every contribution bounded: each large atan argument is
+// multiplied by exactly the small coordinate that produces it.
+
+// Numerically stable log(c + r).
+// Since r >= |c|, the argument c+r is always >= 0, but for c < 0 the direct
+// evaluation suffers catastrophic cancellation. We then use the algebraically
+// equivalent (c+r) = perp2 / (r-c), where perp2 = r^2 - c^2 is the sum of the
+// squares of the other two coordinates and r-c is free of cancellation.
 template<typename T>
-T primitive(T x, T y, T z)
+T stable_log_sum(T c, T r, T perp2, T eps)
 {
-    T r2 = x * x + y * y + z * z;
-    T r = sqrt(r2 + 1e-30f);
-    T log_xr = log(abs(x + r) + 1e-30f);
-    T log_yr = log(abs(y + r) + 1e-30f);
-    T log_zr = log(abs(z + r) + 1e-30f);
-    T atan1 = atan(y * z / (x * r + 1e-30f));
-    T atan2 = atan(x * z / (y * r + 1e-30f));
-    T atan3 = atan(x * y / (z * r + 1e-30f));
-    return y * z * log_xr - 0.5f * x * x * atan1 + x * z * log_yr - 0.5f * y * y * atan2 + x * y * log_zr
-           - 0.5f * z * z * atan3;
+    T arg = cond(c >= T(0), c + r, perp2 / (r - c + eps));
+    return log(arg + eps);
 }
 
 template<typename T>
-T partial_dx(T x, T y, T z)
+struct cube_terms
 {
-    T r2 = x * x + y * y + z * z;
-    T r = sqrt(r2 + 1e-30f);
-    T drdx = x / r;
-    // Term 1
-    T d1 = y * z * (1.0f + drdx) / (x + r + 1e-30f);
-    // Term 2
-    T u = y * z / (x * r + 1e-30f);
-    T du_dx = -(y * z) * (x * x + r2) / (x * x * r * r * r + 1e-30f);
-    T atan_u = atan(u);
-    T d2 = -x * atan_u - (x * x / 2.0f) * (1.0f / (1.0f + u * u + 1e-30f)) * du_dx;
-    // Term 3
-    T d3 = z * log(abs(y + r) + 1e-30f) + x * z * drdx / (y + r + 1e-30f);
-    // Term 4
-    T v = x * z / (y * r + 1e-30f);
-    T dv_dx = (z / (y * r + 1e-30f)) * (1.0f - x * x / (r2 + 1e-30f));
-    // T atan_v = atan(v);
-    T d4 = -(y * y / 2.0f) * (1.0f / (1.0f + v * v + 1e-30f)) * dv_dx;
-    // Term 5
-    T d5 = y * log(abs(z + r) + 1e-30f) + x * y * drdx / (z + r + 1e-30f);
-    // Term 6
-    T w = x * y / (z * r + 1e-30f);
-    T dw_dx = (y / (z * r + 1e-30f)) * (1.0f - x * x / (r2 + 1e-30f));
-    // T atan_w = atan(w);
-    T d6 = -(z * z / 2.0f) * (1.0f / (1.0f + w * w + 1e-30f)) * dw_dx;
-    return d1 + d2 + d3 + d4 + d5 + d6;
-}
+    T phi;
+    T fx;
+    T fy;
+    T fz;
+};
 
+// Potential antiderivative and its gradient for a single corner offset (x,y,z).
+// All transcendentals are computed once and shared between the potential and
+// the three force components.
 template<typename T>
-T partial_dy(T x, T y, T z)
+cube_terms<T> cube_primitive_and_grad(T x, T y, T z)
 {
-    T r2 = x * x + y * y + z * z;
-    T r = sqrt(r2 + 1e-30f);
-    T drdy = y / r;
-    // Term 1
-    T d1 = z * log(abs(x + r) + 1e-30f) + y * z * drdy / (x + r + 1e-30f);
-    // Term 2
-    T u = y * z / (x * r + 1e-30f);
-    T du_dy = (z / (x * r + 1e-30f)) * (1.0f - y * y / (r2 + 1e-30f));
-    // T atan_u = atan(u);
-    T d2 = -(x * x / 2.0f) * (1.0f / (1.0f + u * u + 1e-30f)) * du_dy;
-    // Term 3
-    T d3 = x * z * (1.0f + drdy) / (y + r + 1e-30f);
-    // Term 4
-    T v = x * z / (y * r + 1e-30f);
-    T dv_dy = -(x * z / r) * (1.0f / (y * y + 1e-30f) + 1.0f / (r2 + 1e-30f));
-    T atan_v = atan(v);
-    T d4 = -y * atan_v - (y * y / 2.0f) * (1.0f / (1.0f + v * v + 1e-30f)) * dv_dy;
-    // Term 5
-    T d5 = x * log(abs(z + r) + 1e-30f) + x * y * drdy / (z + r + 1e-30f);
-    // Term 6
-    T w = x * y / (z * r + 1e-30f);
-    T dw_dy = (x / (z * r + 1e-30f)) * (1.0f - y * y / (r2 + 1e-30f));
-    // T atan_w = atan(w);
-    T d6 = -(z * z / 2.0f) * (1.0f / (1.0f + w * w + 1e-30f)) * dw_dy;
-    return d1 + d2 + d3 + d4 + d5 + d6;
-}
+    const T eps = T(1e-30f);
 
-template<typename T>
-T partial_dz(T x, T y, T z)
-{
-    T r2 = x * x + y * y + z * z;
-    T r = sqrt(r2 + 1e-30f);
-    T drdz = z / r;
-    // Term 1
-    T d1 = y * log(abs(x + r) + 1e-30f) + y * z * drdz / (x + r + 1e-30f);
-    // Term 2
-    T u = y * z / (x * r + 1e-30f);
-    T du_dz = (y / (x * r + 1e-30f)) * (1.0f - z * z / (r2 + 1e-30f));
-    // T atan_u = atan(u);
-    T d2 = -(x * x / 2.0f) * (1.0f / (1.0f + u * u + 1e-30f)) * du_dz;
-    // Term 3
-    T d3 = x * log(abs(y + r) + 1e-30f) + x * z * drdz / (y + r + 1e-30f);
-    // Term 4
-    T v = x * z / (y * r + 1e-30f);
-    T dv_dz = (x / (y * r + 1e-30f)) * (1.0f - z * z / (r2 + 1e-30f));
-    // T atan_v = atan(v);
-    T d4 = -(y * y / 2.0f) * (1.0f / (1.0f + v * v + 1e-30f)) * dv_dz;
-    // Term 5
-    T d5 = x * y * (1.0f + drdz) / (z + r + 1e-30f);
-    // Term 6
-    T w = x * y / (z * r + 1e-30f);
-    T dw_dz = -(x * y / r) * (1.0f / (z * z + 1e-30f) + 1.0f / (r2 + 1e-30f));
-    T atan_w = atan(w);
-    T d6 = -z * atan_w - (z * z / 2.0f) * (1.0f / (1.0f + w * w + 1e-30f)) * dw_dz;
-    return d1 + d2 + d3 + d4 + d5 + d6;
+    T x2 = x * x;
+    T y2 = y * y;
+    T z2 = z * z;
+    T r = sqrt(x2 + y2 + z2 + eps);
+
+    T log_x = stable_log_sum(x, r, y2 + z2, eps);
+    T log_y = stable_log_sum(y, r, x2 + z2, eps);
+    T log_z = stable_log_sum(z, r, x2 + y2, eps);
+
+    // atan(prod / (coord * r)); the additive eps only guards the exact 0/0 case
+    // and is negligible otherwise (the result is multiplied by `coord`, which
+    // vanishes in precisely the regime where the denominator does).
+    T atan_x = atan(y * z / (x * r + eps));
+    T atan_y = atan(x * z / (y * r + eps));
+    T atan_z = atan(x * y / (z * r + eps));
+
+    cube_terms<T> t;
+    t.phi = y * z * log_x + x * z * log_y + x * y * log_z
+            - T(0.5f) * (x2 * atan_x + y2 * atan_y + z2 * atan_z);
+    t.fx = y * log_z + z * log_y - x * atan_x;
+    t.fy = z * log_x + x * log_z - y * atan_y;
+    t.fz = x * log_y + y * log_x - z * atan_z;
+    return t;
 }
 
 template<typename T>
@@ -132,11 +95,11 @@ pair<T, Eigen::Vector<T, 3>> get_potential_and_force(const Eigen::Vector<T, 3>& 
                 T zz = (iz == 0 ? low_z : high_z);
                 int num_low = (ix == 0) + (iy == 0) + (iz == 0);
                 T sign = (num_low % 2 == 0 ? 1.0 : -1.0);
-                T F = primitive(xx, yy, zz);
-                sum_phi += sign * F;
-                sum_fx += sign * partial_dx(xx, yy, zz);
-                sum_fy += sign * partial_dy(xx, yy, zz);
-                sum_fz += sign * partial_dz(xx, yy, zz);
+                cube_terms<T> t = cube_primitive_and_grad(xx, yy, zz);
+                sum_phi += sign * t.phi;
+                sum_fx += sign * t.fx;
+                sum_fy += sign * t.fy;
+                sum_fz += sign * t.fz;
             }
         }
     }
