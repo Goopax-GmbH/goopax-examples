@@ -9,6 +9,7 @@
 #if WITH_TIMINGS
 #include <chrono>
 #endif
+#include "../common/gpu_array.hpp"
 #include "../common/output.hpp"
 #include <fstream>
 #include <goopax_draw/window_sdl.h>
@@ -118,7 +119,7 @@ struct treenode : public scratch_treenode<T>
     using goopax_struct_changetype = treenode<typename goopax_struct_changetype<T, X>::type>;
     using uint_type = typename change_gpu_mode<unsigned int, T>::type;
 
-    array<uint_type, 2> children;
+    gpu_array<uint_type, 2> children;
     uint_type parent;
     Vector<T, 3> rcenter;
     typename change_gpu_mode<signature_t, T>::type signature;
@@ -476,7 +477,7 @@ struct Cosmos : public CosmosData<T>
     buffer<Tuint> surrounding_buf;
 #endif
 #if SURROUNDING2
-    buffer<array<Tuint, 6>> surrounding2_buf;
+    buffer<gpu_array<Tuint, 6>> surrounding2_buf;
 #endif
 
     vector<pair<Tuint, Tuint>> treeranges;
@@ -549,7 +550,7 @@ struct Cosmos : public CosmosData<T>
         for (int depth = max_depth; depth >= 0; --depth)
         {
             auto get_neighbor = [&](gpu_uint node, int dim, bool dir) {
-                return gpu_array_access(surrounding2_buf[node], 2 * dim + (dir ^ (reverse[(1 + dim + depth) % 3])));
+                return surrounding2_buf[node][2 * dim + (dir ^ (reverse[(1 + dim + depth) % 3]))];
             };
 
             auto get_all_points = [depth](Vector<Tint, 3> p) {
@@ -771,7 +772,7 @@ struct Cosmos : public CosmosData<T>
                 {
                     tree[self].need_split = true;
                     tree[self].is_partnode = false;
-                    tree[self].children = { 2 * self - 2, 2 * self - 1 };
+                    tree[self].children = { { 2 * self - 2, 2 * self - 1 } };
                     tree[self].parent = self == 3 ? Tuint(0) : (self + 2) / 2;
 
                     Tuint parent = tree[self].parent;
@@ -1748,7 +1749,7 @@ struct Cosmos : public CosmosData<T>
                                 gpu_assert(parent >= 2u);
                                 gpu_if(parent >= 2u)
                                 {
-                                    gpu_array_access(tree[parent].children, childnum) = new_self;
+                                    tree[parent].children[childnum] = new_self;
                                     gpu_assert(old_node_p[new_self] == 0);
                                     old_node_p[new_self] =
                                         reinterpret<gpu_type<Tuint*>>(old_children + old_node_p[parent])[childnum];
@@ -1758,7 +1759,7 @@ struct Cosmos : public CosmosData<T>
 
                     gpu_for_global(treeranges_parent_withchild_nochild[1],
                                    treeranges_parent_withchild_nochild[2],
-                                   [&](gpu_uint k) { tree[k].children = { 0, 0 }; });
+                                   [&](gpu_uint k) { tree[k].children = { { 0, 0 } }; });
                 },
                 this->treecount2.local_size(), // thread numbers must be the same as in treecount2.
                 this->treecount2.global_size());
@@ -1891,7 +1892,7 @@ struct Cosmos : public CosmosData<T>
         futures.push(
             make_tree_clear_leaf_childs.assign(policy, device, [this](pair<gpu_uint, gpu_uint> treerange_leaf) {
                 gpu_for_global(treerange_leaf.first, treerange_leaf.second, [&](gpu_uint k) {
-                    tree[k].children = { 0, 0 };
+                    tree[k].children = { { 0, 0 } };
                     static_cast<scratch_treenode<gpu_T>&>(tree[k]) = scratch_tree[k];
                 });
             }));
@@ -2550,13 +2551,13 @@ struct Cosmos : public CosmosData<T>
                         sig_change /= 2;
                     }
 
-                    gpu_uint child = gpu_array_access(this->tree[i].children, (new_sig & bit) != 0);
+                    gpu_uint child = this->tree[i].children[(new_sig & bit) != 0];
                     // Going down to the new leaf.
                     gpu_while(child != 0)
                     {
                         i = child;
                         bit >>= 1;
-                        child = gpu_array_access(this->tree[i].children, (new_sig & bit) != 0);
+                        child = this->tree[i].children[(new_sig & bit) != 0];
                     }
 
                     // Add to linked list of particles that are to be added to node i.
