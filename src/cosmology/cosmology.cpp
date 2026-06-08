@@ -36,7 +36,7 @@ PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 1000000); // Number of particle
 PARAMOPT<double> TREE_FACTOR("tree_factor", 0.8);
 PARAMOPT<double> FORCE_TREE_FACTOR("force_tree_factor", 0.3);
 PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
-PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 400);
+PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 410);
 PARAMOPT<Tdouble> DT("dt", 1E-3);
 
 template<class T>
@@ -625,6 +625,7 @@ int main(int argc, char** argv)
             CosmosData<Tfloat> initData;
 
             Tuint num_particles = NUM_PARTICLES();
+            unsigned int make_tree_every = 2;
 
             if (argc >= 2)
             {
@@ -635,6 +636,7 @@ int main(int argc, char** argv)
                 {
                     hdf5_reader reader(fn.string());
                     num_particles = reader.npart[1];
+                    make_tree_every = 16;
                 }
 #endif
             }
@@ -868,9 +870,13 @@ int main(int argc, char** argv)
             Vector<float, 2> last_mouse;
             int mouse_button_down = 0;
 
-            constexpr unsigned int make_tree_every = 2;
+#if PERFORMANCE_RUN
+            constexpr unsigned int render_every = 1024;
+            constexpr unsigned int pot_every = 1024;
+#else
             constexpr unsigned int render_every = 1;
             constexpr unsigned int pot_every = 2;
+#endif
 
             cosmos.make_initial_tree();
 #if WITH_VULKAN
@@ -878,15 +884,32 @@ int main(int argc, char** argv)
 #endif
 
             float rate = 0;
+#if PERFORMANCE_RUN
+            steady_clock::time_point simu_start;
+#endif
 
             for (Tsize_t step = 0; !quit; ++step)
             {
+#if PERFORMANCE_RUN
+                if (step == 1)
+                {
+                    simu_start = steady_clock::now();
+                }
+#endif
+
                 if (cosmic.is_cosmic ? (cosmic.a > 1) : (step == 2000))
                 {
+#if PERFORMANCE_RUN
+                    auto simu_stop = steady_clock::now();
+                    cout << "PERFORMANCE: " << step - 1 << " steps in "
+                         << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << endl;
+                    cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE() << endl;
+                    // return 0;
+#endif
                     break;
                 }
 
-                cout << "step=" << step << ". a=" << cosmic.a << ", t=" << cosmic.t / (1E9 * yr_) << " Gyr" << endl;
+                // cout << "step=" << step << ". a=" << cosmic.a << ", t=" << cosmic.t / (1E9 * yr_) << " Gyr" << endl;
                 while (auto e = window->get_event())
                 {
                     if (e->type == SDL_EVENT_QUIT)
@@ -955,7 +978,7 @@ int main(int argc, char** argv)
 
                 if (step % make_tree_every == 0)
                 {
-                    cout << "reconstructing tree" << endl;
+                    // cout << "step=" << step << ". reconstructing tree" << endl;
                     cosmos.make_tree();
                 }
 

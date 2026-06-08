@@ -1,4 +1,5 @@
 #define WITH_TIMINGS 0
+#define PERFORMANCE_RUN 1
 
 #if WITH_OPENCV
 #include <opencv2/opencv.hpp>
@@ -6,7 +7,7 @@
 
 #include <SDL3/SDL_main.h>
 #include <goopax_draw/particle.hpp>
-#if WITH_TIMINGS
+#if WITH_TIMINGS || PERFORMANCE_RUN
 #include <chrono>
 #endif
 #include "../common/gpu_array.hpp"
