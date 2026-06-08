@@ -2009,7 +2009,7 @@ struct Cosmos : public CosmosData<T>
                         x[k] = old_x;
                         v[k] = { 0, 0, 0 };
                     }
-                    gpu_assert(isfinite(x[k].squaredNorm()));
+                    gpu_assert((x[k].squaredNorm()) < 1E20f);
                 });
             }));
 
@@ -2106,11 +2106,10 @@ struct Cosmos : public CosmosData<T>
                                 }
                                 gpu_if(!ok)
                                 {
-                                    gpu_ostream DUMP(cout);
-                                    DUMP << "BAD: x[" << pa << "]=" << x[pa] << ", rotated=" << rot(x[pa], mod3)
-                                         << "\nnode[" << self << "]=" << tree[self]
-                                         << "\ndiff=" << (rot(x[pa], mod3) - this->tree[self].rcenter)
-                                         << "\nhalflen3=" << halflen3 << endl;
+                                    gpu_cout << "BAD: x[" << pa << "]=" << x[pa] << ", rotated=" << rot(x[pa], mod3)
+                                             << "\nnode[" << self << "]=" << tree[self]
+                                             << "\ndiff=" << (rot(x[pa], mod3) - this->tree[self].rcenter)
+                                             << "\nhalflen3=" << halflen3 << endl;
                                 }
                             // gpu_assert(ok);
 #endif
@@ -2270,7 +2269,11 @@ struct Cosmos : public CosmosData<T>
                                              * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
                                                 * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
-                                    gpu_if(dist.squaredNorm() != 0)
+                                    gpu_if(dist.squaredNorm() != 0
+#if GOOPAX_DEBUG
+                                           || !is_initialized(dist.squaredNorm())
+#endif
+                                    )
                                     {
                                         P2[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
                                     }
