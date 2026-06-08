@@ -138,15 +138,6 @@ struct treenode : public scratch_treenode<T>
     }
 };
 
-void myassert(bool b)
-{
-    assert(b);
-}
-void myassert(gpu_bool b)
-{
-    gpu_assert(b);
-}
-
 template<class T>
 auto calc_sig_fast(const Vector<T, 3>& x, Tuint32_t)
 {
@@ -160,7 +151,7 @@ auto calc_sig_fast(const Vector<T, 3>& x, Tuint32_t)
         for (Tint k = 0; k < 3; ++k)
         {
             sig_t s = sig_t(abs(x[k]) * (1.0 / (top_halflen * pow(2.0, Tdouble(2 - k) / 3)) * (1 << (depth[k] - 1))));
-            myassert(s < (1u << depth[k]));
+            gpu_assert(s < (1u << depth[k]));
             s = cond(x[k] > 0, s, (1 << (depth[k] - 1)) - 1 - s);
             if (depth[k] - 1 > 8)
                 s = ((s & 0x0000ff00) << 16) | (s & 0x000000ff);
@@ -192,7 +183,7 @@ auto calc_sig_fast(const Vector<T, 3>& x, Tuint64_t)
         {
             sig_t s = sig_t(
                 abs(x[k]) * static_cast<T>(1.0 / (top_halflen * pow(2.0, Tdouble(2 - k) / 3)) * (1 << (depth[k] - 1))));
-            myassert(s < (1u << depth[k]));
+            gpu_assert(s < (1u << depth[k]));
             s = cond(x[k] > 0, s, (1 << (depth[k] - 1)) - 1 - s);
             if (depth[k] - 1 > 16)
                 s = (gpu_uint64(s & 0xffff0000) << 32) | (s & 0x0000ffff);
