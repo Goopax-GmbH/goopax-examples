@@ -1,3 +1,6 @@
 [submodule "src/common/draw"]
 	path = src/common/draw
 	url = https://github.com/Goopax-GmbH/goopax-draw.git
+[submodule "src/cosmology/MUSIC2"]
+	path = src/cosmology/MUSIC2
+	url = https://github.com/cosmo-sims/MUSIC2.git

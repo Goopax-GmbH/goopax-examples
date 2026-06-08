@@ -1052,7 +1052,7 @@ int main(int argc, char** argv)
 
                             if (cosmic.is_cosmic)
                             {
-                                double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+                                double caltime = cosmic.t - cosmic.today + 3297975 * yr_ + 2025 * yr_ + 2026 * yr_;
 
                                 ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
                                    << " ("
