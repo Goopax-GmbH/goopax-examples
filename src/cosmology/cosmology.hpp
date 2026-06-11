@@ -28,7 +28,7 @@
 
 #define CONSTANT_MASS 1
 
-constexpr unsigned min_tree_depth = 10;
+constexpr unsigned min_tree_depth = 14;
 
 using Eigen::Vector;
 using Eigen::Vector3;

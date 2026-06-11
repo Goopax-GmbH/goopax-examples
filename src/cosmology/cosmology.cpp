@@ -903,8 +903,10 @@ int main(int argc, char** argv)
                     auto simu_stop = steady_clock::now();
                     cout << "PERFORMANCE: " << step - 1 << " steps in "
                          << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << endl;
-                    cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE() << endl;
-                    // return 0;
+                    cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE()
+			 << ", min_tree_depth=" << min_tree_depth
+			 << endl;
+		    return 0;
 #endif
                     break;
                 }
