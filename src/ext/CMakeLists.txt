@@ -93,7 +93,9 @@ ExternalProject_Add(
   "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/opencv"
 )
 if (NOT OpenCV_FOUND)
-  add_dependencies(build_external_libraries build_opencv)
+  if (NOT WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_dependencies(build_external_libraries build_opencv)
+  endif()
 endif()
 
 ExternalProject_Add(
