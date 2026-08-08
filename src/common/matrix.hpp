@@ -323,7 +323,8 @@ struct workgroup_matrix_c
 
     template<typename P,
              typename = typename std::enable_if<
-                 pointer_valid<P> && !std::is_const<typename goopax_remove_pointer<P>::type>::value>::type>
+                 pointer_valid<P>
+                 && !std::is_const<typename goopax_remove_pointer<typename make_cpu<P>::type>::type>::value>::type>
     void store(P ptr, layout_t layout, gpu_uint pitch)
     {
         tile.store(
