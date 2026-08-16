@@ -323,7 +323,8 @@ struct workgroup_matrix_c
 
     template<typename P,
              typename = typename std::enable_if<
-                 pointer_valid<P> && !std::is_const<typename goopax_remove_pointer<P>::type>::value>::type>
+                 pointer_valid<P>
+                 && !std::is_const<typename goopax_remove_pointer<typename make_cpu<P>::type>::type>::value>::type>
     void store(P ptr, layout_t layout, gpu_uint pitch)
     {
         tile.store(
@@ -510,8 +511,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                     // block_width=32.
                     matrix::warp_matrix<precision::fp8ue8m0> scale_a(mc.rows / mc.brows, ma.cols / 32);
                     matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mc.cols / mc.bcols);
-                    scale_a.fill(1);
-                    scale_b.fill(1);
+                    scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+                    scale_b.fill(static_cast<precision::fp8ue8m0>(1));
                     mc.add_product(ma, mb, block_k % 2, scale_a, scale_b);
                 }
                 else
@@ -585,8 +586,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                         // block_width=32.
                         matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
                         matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
-                        scale_a.fill(1);
-                        scale_b.fill(1);
+                        scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+                        scale_b.fill(static_cast<precision::fp8ue8m0>(1));
                         mc = multiply_add(ma, mb, mc, scale_a, scale_b);
                     }
                     else
@@ -616,8 +617,8 @@ void create_matmul_kernel_common(resource<a_float_type>& A,
                         // block_width=32.
                         matrix::warp_matrix<precision::fp8ue8m0> scale_a(ma.rows, ma.cols / 32);
                         matrix::warp_matrix<precision::fp8ue8m0> scale_b(mb.rows / 32, mb.cols);
-                        scale_a.fill(1);
-                        scale_b.fill(1);
+                        scale_a.fill(static_cast<precision::fp8ue8m0>(1));
+                        scale_b.fill(static_cast<precision::fp8ue8m0>(1));
                         mc = multiply_add(ma, mb, mc, scale_a, scale_b);
                     }
                     else
