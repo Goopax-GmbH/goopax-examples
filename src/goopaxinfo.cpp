@@ -83,7 +83,7 @@ int main()
                 {
                     cout << " (min alignment: " << d.min_host_ptr_alignment() << ")";
                 }
-                cout << endl;
+                cout << endl << "    host_numa_id=" << d.host_numa_id() << ", gpu_numa_id=" << d.gpu_numa_id() << endl;
                 cout << "    supported types:";
                 const char* delim = " ";
 
