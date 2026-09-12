@@ -60,8 +60,7 @@ cube_terms<T> cube_primitive_and_grad(T x, T y, T z)
     T atan_z = atan(x * y / (z * r + eps));
 
     cube_terms<T> t;
-    t.phi = y * z * log_x + x * z * log_y + x * y * log_z
-            - T(0.5f) * (x2 * atan_x + y2 * atan_y + z2 * atan_z);
+    t.phi = y * z * log_x + x * z * log_y + x * y * log_z - T(0.5f) * (x2 * atan_x + y2 * atan_y + z2 * atan_z);
     t.fx = y * log_z + z * log_y - x * atan_x;
     t.fy = z * log_x + x * log_z - y * atan_y;
     t.fz = x * log_y + y * log_x - z * atan_z;

@@ -1,5 +1,5 @@
 #define WITH_TIMINGS 0
-#define PERFORMANCE_RUN 1
+#define PERFORMANCE_RUN 0
 
 #if WITH_OPENCV
 #include <opencv2/opencv.hpp>
@@ -2270,11 +2270,11 @@ struct Cosmos : public CosmosData<T>
                                              * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
                                                 * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
 
-                                    gpu_if(dist.squaredNorm() != 0
 #if GOOPAX_DEBUG
-                                           || !is_initialized(dist.squaredNorm())
+                                    gpu_if(dist.squaredNorm() != 0 || !is_initialized(dist.squaredNorm()))
+#else
+                                    gpu_if(dist.squaredNorm() != 0)
 #endif
-                                    )
                                     {
                                         P2[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
                                     }
