@@ -53,6 +53,7 @@ void heapsort(RES& a, const gpu_uint count, CMP cmp = std::less<>())
 template<typename T, typename CMP = std::less<>>
 void sort_tiny(gpu_type<T*> data, gpu_uint size, unsigned int max_size, CMP cmp = std::less<>())
 {
+    gpu_assert(size <= max_size);
     private_mem<T> tmp(max_size);
 
     gpu_for(0, size, [&](gpu_uint k) { tmp[k] = data[k]; });
