@@ -419,19 +419,246 @@ catch (EX::goopax_exception& e)
     cout << "Got exception '" << e.what() << "'" << endl;
 }
 
+static std::unordered_map<detail::goopax_device_impl*, WELL512_data> rnd_cache;
+
+template<typename T>
+void fill_random(buffer<T>& a)
+{
+    using kernel_t = kernel<void(buffer<T> & a)>;
+
+    static std::mutex Mutex;
+    static std::unordered_map<detail::goopax_device_impl*, kernel_t> kernel_cache;
+    goopax_device device = a.get_device();
+
+    kernel_t k;
+    {
+        std::lock_guard lock(Mutex);
+        auto p = kernel_cache.find(device.get_impl());
+        if (p == kernel_cache.end())
+        {
+            if (!rnd_cache.contains(device.get_impl()))
+            {
+                std::random_device rd;
+                rnd_cache[device.get_impl()].assign(device, device.default_global_size_max(), rd());
+                device.at_device_cleanup(
+                    [](void* data) {
+                        detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
+                        rnd_cache.erase(device);
+                    },
+                    device.get_impl());
+            }
+
+            p = kernel_cache
+                    .emplace(device.get_impl(),
+                             kernel_t(device,
+                                      [device](resource<T>& a) {
+                                          WELL512_lib rndlib(rnd_cache[device.get_impl()]);
+                                          for_each_global(a, [&](auto& x) {
+                                              x = static_cast<typename make_gpu<T>::type>(
+                                                  rndlib.gaussian_distribution());
+                                          });
+                                      }))
+                    .first;
+
+            detail::release(device.get_impl());
+            device.at_device_cleanup(
+                [](void* data) {
+                    detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
+                    detail::retain(device);
+                    std::lock_guard lock(Mutex);
+                    kernel_cache.erase(device);
+                },
+                device.get_impl());
+        }
+        k = p->second;
+    }
+    k(a);
+}
+
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+class Matmul
+{
+    static constexpr bool is_sparse = false;
+    static constexpr bool with_block_scaling = false;
+
+public:
+    goopax_device device;
+    buffer<a_float_type> Abuf_fast;
+    buffer<b_float_type> Bbuf_fast;
+
+    kernel<void(const buffer<a_float_type>& A)> prepare_A;
+    kernel<void(const buffer<b_float_type>& B)> prepare_B;
+    kernel<void(buffer<c_float_type>& D)> multiply;
+
+    template<typename T>
+    auto prepare_func(buffer<T>& Mbuf_fast,
+                      unsigned int rows,
+                      unsigned int cols,
+                      unsigned int block_rows,
+                      unsigned int block_cols,
+                      matrix::use_t use,
+                      const matrix::matrix_support_info* mi)
+    {
+        return [rows, cols, block_rows, block_cols, use, mi, &Mbuf_fast](const resource<T>& Mbuf) {
+            gpu_for_group(0, (rows / block_rows) * (cols / block_cols), [&](gpu_uint block) {
+                gpu_uint br = block / (cols / block_cols);
+                gpu_uint bc = block % (cols / block_cols);
+                matrix::warp_matrix<T> M(block_rows,
+                                         block_cols,
+                                         Mbuf.begin() + br * block_rows * cols + bc * block_cols,
+                                         matrix::row_major,
+                                         cols);
+                M.set_info(mi);
+                M.set_use(use);
+                M.store(Mbuf_fast.begin() + block * block_rows * block_cols, matrix::layout_optimal);
+            });
+        };
+    }
+
+    Matmul(goopax_device device0,
+           unsigned int m,
+           unsigned int n,
+           unsigned int k,
+           unsigned int block_m,
+           unsigned int block_n,
+           unsigned int block_k)
+        : device(device0)
+        , Abuf_fast(device, m * k)
+        , Bbuf_fast(device, k * n)
+    {
+        const matrix::matrix_support_info* mi_use = nullptr;
+        Tuint ls;
+        for (const matrix::matrix_support_info* mi = device.get_matrix_support_table(); mi; mi = mi->next)
+        {
+            if (mi->type_enum_a == type_enum<a_float_type>::value && mi->type_enum_b == type_enum<b_float_type>::value
+                && mi->type_enum_c == type_enum<c_float_type>::value && mi->is_sparse() == is_sparse
+                && mi->with_block_scaling() == with_block_scaling && block_m % mi->mnk[0] == 0
+                && block_n % mi->mnk[1] == 0 && block_k % mi->mnk[2] == 0)
+            {
+                mi_use = mi;
+                ls = mi->Nthreads;
+                break;
+            }
+        }
+        if (mi_use == nullptr)
+        {
+            throw std::runtime_error("Cannot find suitable mi");
+        }
+        cout << "using mi=" << *mi_use << endl;
+
+        prepare_A.assign(
+            device, prepare_func<a_float_type>(Abuf_fast, m, k, block_m, block_k, matrix::matrix_a, mi_use), ls, 0);
+        prepare_B.assign(device, prepare_func(Bbuf_fast, k, n, block_k, block_n, matrix::matrix_b, mi_use), ls, 0);
+        multiply.assign(
+            device,
+            [&](resource<c_float_type>& Dbuf) {
+                gpu_for_group(0, (m / block_m) * (n / block_n), [&](gpu_uint block) {
+                    gpu_uint br = block / (n / block_n);
+                    gpu_uint bc = block % (n / block_n);
+                    matrix::warp_matrix<c_float_type> D(block_m, block_n);
+                    D.set_info(mi_use);
+                    D.fill(0);
+                    gpu_for(0, (k / block_k), [&](gpu_uint bk) {
+                        matrix::warp_matrix<a_float_type> A(
+                            block_m, block_k, Abuf_fast.begin() + block * block_m * block_k, matrix::layout_optimal);
+                        matrix::warp_matrix<b_float_type> B(
+                            block_k, block_n, Bbuf_fast.begin() + block * block_k * block_n, matrix::layout_optimal);
+                        D += A * B;
+                    });
+                    D.store(Dbuf.begin() + br * block_m * n + bc * block_n, matrix::row_major, n);
+                });
+            },
+            ls,
+            0);
+    }
+};
+
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+void verify(span<const a_float_type> Adata,
+            span<const b_float_type> Bdata,
+            span<const c_float_type> Ddata,
+            unsigned int m,
+            unsigned int n,
+            unsigned int k)
+{
+    VectorX<double> test_vector;
+    {
+        std::default_random_engine generator;
+        std::normal_distribution<double> distribution;
+        test_vector = VectorX<double>(N());
+        for (double& e : test_vector)
+        {
+            e = distribution(generator);
+        }
+    }
+    MatrixX<double> A =
+        Map<Matrix<a_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<a_float_type*>(Adata.data()), m, k)
+            .template cast<double>();
+    MatrixX<double> B =
+        Map<Matrix<b_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<b_float_type*>(Bdata.data()), k, n)
+            .template cast<double>();
+    MatrixX<double> D =
+        Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<c_float_type*>(Ddata.data()), m, n)
+            .template cast<double>();
+
+    VectorX<double> rwant = A * (B * test_vector);
+    VectorX<double> rhave = D * test_vector;
+
+    if (VERB)
+    {
+        cout << "A=\n" << A << endl;
+        cout << "B=\n" << B << endl;
+        cout << "D=\n" << D << endl;
+        MatrixX<double> D_cpu = A * B;
+        cout << "Dcpu=\n" << D_cpu << endl;
+        cout << "diff=\n" << D - D_cpu << endl;
+    }
+    cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl << endl;
+}
+
+template<typename a_float_type, typename b_float_type, typename c_float_type>
+void run2(goopax_device device)
+try
+{
+    Matmul<a_float_type, b_float_type, c_float_type> matmul(device, M, N, K, 32, 32, 32);
+
+    buffer<a_float_type> A(device, M * K);
+    buffer<b_float_type> B(device, K * N);
+    buffer<c_float_type> D(device, M * N);
+    fill_random(A);
+    fill_random(B);
+
+    matmul.prepare_A(A);
+    matmul.prepare_B(B);
+
+    matmul.multiply(D);
+    verify<a_float_type, b_float_type, c_float_type>(
+        const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
+}
+catch (std::exception& e)
+{
+    cout << "Got e=" << e.what() << endl;
+}
+
 template<typename a_float_type, typename b_float_type, typename c_float_type>
 void run_with_types(goopax_device device)
 {
     cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
          << ", T_B=" << type_name(type_enum<b_float_type>::value)
          << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
-    run<a_float_type, b_float_type, c_float_type, false>(device, false);
+    if constexpr (bitsize<a_float_type>::value == 8)
+    {
+        run2<a_float_type, b_float_type, c_float_type>(device);
+    }
+    /*
+      run<a_float_type, b_float_type, c_float_type, false>(device, false);
     run<a_float_type, b_float_type, c_float_type, false>(device, true);
     if constexpr (!std::is_same_v<a_float_type, double>)
     {
         run<a_float_type, b_float_type, c_float_type, true>(device, false);
         run<a_float_type, b_float_type, c_float_type, true>(device, true);
     }
+    */
     cout << endl;
 }
 
