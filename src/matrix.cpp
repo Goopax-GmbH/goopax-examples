@@ -608,12 +608,12 @@ public:
 };
 
 template<typename a_float_type, typename b_float_type, typename c_float_type>
-void verify(span<const a_float_type> Adata,
-            span<const b_float_type> Bdata,
-            span<const c_float_type> Ddata,
-            unsigned int m,
-            unsigned int n,
-            unsigned int k)
+double verify(span<const a_float_type> Adata,
+              span<const b_float_type> Bdata,
+              span<const c_float_type> Ddata,
+              unsigned int m,
+              unsigned int n,
+              unsigned int k)
 {
     VectorX<double> test_vector;
     {
@@ -647,13 +647,15 @@ void verify(span<const a_float_type> Adata,
         cout << "Dcpu=\n" << D_cpu << endl;
         cout << "diff=\n" << D - D_cpu << endl;
     }
-    cout << "err=" << (rhave - rwant).norm() / rwant.norm() << endl << endl;
+    return (rhave - rwant).norm() / rwant.norm();
 }
 
 template<typename a_float_type, typename b_float_type, typename c_float_type>
 void run2(goopax_device device)
 try
 {
+    cout << "run2. MNK=" << M << "," << N << "," << K << ", tile=" << TILE_M << "," << TILE_N << "," << TILE_K << endl;
+
     Matmul<a_float_type, b_float_type, c_float_type> matmul(device, M, N, K, TILE_M, TILE_N, TILE_K);
 
     buffer<a_float_type> A(device, M * K);
@@ -662,12 +664,29 @@ try
     fill_random(A);
     fill_random(B);
 
+    device.wait_all();
+    auto t0 = steady_clock::now();
+
     matmul.prepare_A(A);
     matmul.prepare_B(B);
 
+    device.wait_all();
+    auto t1 = steady_clock::now();
+
     matmul.multiply(D);
-    verify<a_float_type, b_float_type, c_float_type>(
+
+    device.wait_all();
+    auto t2 = steady_clock::now();
+
+    double OPS = double(M) * N * K * 2 / duration_cast<duration<double>>(t2 - t1).count();
+    cout << "preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0)
+         << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
+         << " TOPS" << endl;
+
+    cout << "verifying..." << flush;
+    double err = verify<a_float_type, b_float_type, c_float_type>(
         const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
+    cout << " err=" << err << endl;
 }
 catch (std::exception& e)
 {
