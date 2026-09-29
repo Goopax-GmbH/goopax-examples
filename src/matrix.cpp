@@ -419,6 +419,10 @@ catch (EX::goopax_exception& e)
     cout << "Got exception '" << e.what() << "'" << endl;
 }
 
+PARAMOPT<unsigned int> TILE_M("tile_m", 32);
+PARAMOPT<unsigned int> TILE_N("tile_n", 32);
+PARAMOPT<unsigned int> TILE_K("tile_k", 32);
+
 static std::unordered_map<detail::goopax_device_impl*, WELL512_data> rnd_cache;
 
 template<typename T>
@@ -440,12 +444,12 @@ void fill_random(buffer<T>& a)
             {
                 std::random_device rd;
                 rnd_cache[device.get_impl()].assign(device, device.default_global_size_max(), rd());
-		detail::release(device.get_impl());
+                detail::release(device.get_impl());
                 device.at_device_cleanup(
                     [](void* data) {
                         detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
-			detail::retain(device);
-			std::lock_guard lock(Mutex);
+                        detail::retain(device);
+                        std::lock_guard lock(Mutex);
                         rnd_cache.erase(device);
                     },
                     device.get_impl());
@@ -501,24 +505,34 @@ public:
     auto prepare_func(buffer<T>& Mbuf_fast,
                       unsigned int rows,
                       unsigned int cols,
-                      unsigned int block_rows,
-                      unsigned int block_cols,
+                      unsigned int tile_rows,
+                      unsigned int tile_cols,
                       matrix::use_t use,
                       const matrix::matrix_support_info* mi)
     {
-        return [rows, cols, block_rows, block_cols, use, mi, &Mbuf_fast](const resource<T>& Mbuf) {
-            gpu_for_group(0, (rows / block_rows) * (cols / block_cols), [&](gpu_uint block) {
-                gpu_uint br = block / (cols / block_cols);
-                gpu_uint bc = block % (cols / block_cols);
-                matrix::warp_matrix<typename unrangetype<T>::type> M(block_rows,
-                                                                     block_cols,
-                                                                     Mbuf.begin() + br * block_rows * cols
-                                                                         + bc * block_cols,
+        return [rows, cols, tile_rows, tile_cols, use, mi, &Mbuf_fast](const resource<T>& Mbuf) {
+            gpu_for_group(0, (rows / tile_rows) * (cols / tile_cols), [&](gpu_uint tile) {
+                gpu_uint tr;
+                gpu_uint tc;
+                if (use == matrix::matrix_a)
+                {
+                    tr = tile / (cols / tile_cols);
+                    tc = tile % (cols / tile_cols);
+                }
+                else if (use == matrix::matrix_b)
+                {
+                    tc = tile / (rows / tile_rows);
+                    tr = tile % (rows / tile_rows);
+                }
+                matrix::warp_matrix<typename unrangetype<T>::type> M(tile_rows,
+                                                                     tile_cols,
+                                                                     Mbuf.begin() + tr * tile_rows * cols
+                                                                         + tc * tile_cols,
                                                                      matrix::row_major,
                                                                      cols);
                 M.set_info(mi);
                 M.set_use(use);
-                M.store(Mbuf_fast.begin() + block * block_rows * block_cols, matrix::layout_optimal);
+                M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols, matrix::layout_optimal);
             });
         };
     }
@@ -527,13 +541,18 @@ public:
            unsigned int m,
            unsigned int n,
            unsigned int k,
-           unsigned int block_m,
-           unsigned int block_n,
-           unsigned int block_k)
+           unsigned int tile_m,
+           unsigned int tile_n,
+           unsigned int tile_k)
         : device(device0)
         , Abuf_fast(device, m * k)
         , Bbuf_fast(device, k * n)
     {
+        if (m % tile_m != 0 || n % tile_n != 0 || k % tile_k != 0)
+        {
+            throw std::runtime_error("big matrix sizes must be multiples of tile sizes");
+        }
+
         const matrix::matrix_support_info* mi_use = nullptr;
         Tuint ls;
         for (const matrix::matrix_support_info* mi = device.get_matrix_support_table(); mi; mi = mi->next)
@@ -541,8 +560,8 @@ public:
             if (mi->type_enum_a == type_enum<a_float_type_nodebug>::value
                 && mi->type_enum_b == type_enum<b_float_type_nodebug>::value
                 && mi->type_enum_c == type_enum<c_float_type_nodebug>::value && mi->is_sparse() == is_sparse
-                && mi->with_block_scaling() == with_block_scaling && block_m % mi->mnk[0] == 0
-                && block_n % mi->mnk[1] == 0 && block_k % mi->mnk[2] == 0)
+                && mi->with_block_scaling() == with_block_scaling && tile_m % mi->mnk[0] == 0
+                && tile_n % mi->mnk[1] == 0 && tile_k % mi->mnk[2] == 0)
             {
                 mi_use = mi;
                 ls = mi->Nthreads;
@@ -556,25 +575,31 @@ public:
         cout << "using mi=" << *mi_use << endl;
 
         prepare_A.assign(
-            device, prepare_func<a_float_type>(Abuf_fast, m, k, block_m, block_k, matrix::matrix_a, mi_use), ls, 0);
-        prepare_B.assign(device, prepare_func(Bbuf_fast, k, n, block_k, block_n, matrix::matrix_b, mi_use), ls, 0);
+            device, prepare_func<a_float_type>(Abuf_fast, m, k, tile_m, tile_k, matrix::matrix_a, mi_use), ls, 0);
+        prepare_B.assign(device, prepare_func(Bbuf_fast, k, n, tile_k, tile_n, matrix::matrix_b, mi_use), ls, 0);
         multiply.assign(
             device,
             [&](resource<c_float_type>& Dbuf) {
-                gpu_for_group(0, (m / block_m) * (n / block_n), [&](gpu_uint block) {
-                    gpu_uint br = block / (n / block_n);
-                    gpu_uint bc = block % (n / block_n);
-                    matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(block_m, block_n);
+                gpu_for_group(0, (m / tile_m) * (n / tile_n), [&](gpu_uint tile) {
+                    gpu_uint tm = tile / (n / tile_n);
+                    gpu_uint tn = tile % (n / tile_n);
+                    matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(tile_m, tile_n);
                     D.set_info(mi_use);
                     D.fill(0);
-                    gpu_for(0, (k / block_k), [&](gpu_uint bk) {
+                    gpu_for(0, (k / tile_k), [&](gpu_uint tk) {
                         matrix::warp_matrix<typename make_cpu<a_float_type_nodebug>::type> A(
-                            block_m, block_k, Abuf_fast.begin() + block * block_m * block_k, matrix::layout_optimal);
+                            tile_m,
+                            tile_k,
+                            Abuf_fast.begin() + (tm * (k / tile_k) + tk) * tile_m * tile_k,
+                            matrix::layout_optimal);
                         matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
-                            block_k, block_n, Bbuf_fast.begin() + block * block_k * block_n, matrix::layout_optimal);
+                            tile_k,
+                            tile_n,
+                            Bbuf_fast.begin() + (tn * (k / tile_k) + tk) * tile_k * tile_n,
+                            matrix::layout_optimal);
                         D += A * B;
                     });
-                    D.store(Dbuf.begin() + br * block_m * n + bc * block_n, matrix::row_major, n);
+                    D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
                 });
             },
             ls,
@@ -629,7 +654,7 @@ template<typename a_float_type, typename b_float_type, typename c_float_type>
 void run2(goopax_device device)
 try
 {
-    Matmul<a_float_type, b_float_type, c_float_type> matmul(device, M, N, K, 32, 32, 32);
+    Matmul<a_float_type, b_float_type, c_float_type> matmul(device, M, N, K, TILE_M, TILE_N, TILE_K);
 
     buffer<a_float_type> A(device, M * K);
     buffer<b_float_type> B(device, K * N);
