@@ -440,9 +440,12 @@ void fill_random(buffer<T>& a)
             {
                 std::random_device rd;
                 rnd_cache[device.get_impl()].assign(device, device.default_global_size_max(), rd());
+		detail::release(device.get_impl());
                 device.at_device_cleanup(
                     [](void* data) {
                         detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
+			detail::retain(device);
+			std::lock_guard lock(Mutex);
                         rnd_cache.erase(device);
                     },
                     device.get_impl());
@@ -482,6 +485,10 @@ class Matmul
     static constexpr bool with_block_scaling = false;
 
 public:
+    using a_float_type_nodebug = typename unrangetype<a_float_type>::type;
+    using b_float_type_nodebug = typename unrangetype<b_float_type>::type;
+    using c_float_type_nodebug = typename unrangetype<c_float_type>::type;
+
     goopax_device device;
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
@@ -503,11 +510,12 @@ public:
             gpu_for_group(0, (rows / block_rows) * (cols / block_cols), [&](gpu_uint block) {
                 gpu_uint br = block / (cols / block_cols);
                 gpu_uint bc = block % (cols / block_cols);
-                matrix::warp_matrix<T> M(block_rows,
-                                         block_cols,
-                                         Mbuf.begin() + br * block_rows * cols + bc * block_cols,
-                                         matrix::row_major,
-                                         cols);
+                matrix::warp_matrix<typename unrangetype<T>::type> M(block_rows,
+                                                                     block_cols,
+                                                                     Mbuf.begin() + br * block_rows * cols
+                                                                         + bc * block_cols,
+                                                                     matrix::row_major,
+                                                                     cols);
                 M.set_info(mi);
                 M.set_use(use);
                 M.store(Mbuf_fast.begin() + block * block_rows * block_cols, matrix::layout_optimal);
@@ -530,8 +538,9 @@ public:
         Tuint ls;
         for (const matrix::matrix_support_info* mi = device.get_matrix_support_table(); mi; mi = mi->next)
         {
-            if (mi->type_enum_a == type_enum<a_float_type>::value && mi->type_enum_b == type_enum<b_float_type>::value
-                && mi->type_enum_c == type_enum<c_float_type>::value && mi->is_sparse() == is_sparse
+            if (mi->type_enum_a == type_enum<a_float_type_nodebug>::value
+                && mi->type_enum_b == type_enum<b_float_type_nodebug>::value
+                && mi->type_enum_c == type_enum<c_float_type_nodebug>::value && mi->is_sparse() == is_sparse
                 && mi->with_block_scaling() == with_block_scaling && block_m % mi->mnk[0] == 0
                 && block_n % mi->mnk[1] == 0 && block_k % mi->mnk[2] == 0)
             {
@@ -555,13 +564,13 @@ public:
                 gpu_for_group(0, (m / block_m) * (n / block_n), [&](gpu_uint block) {
                     gpu_uint br = block / (n / block_n);
                     gpu_uint bc = block % (n / block_n);
-                    matrix::warp_matrix<c_float_type> D(block_m, block_n);
+                    matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(block_m, block_n);
                     D.set_info(mi_use);
                     D.fill(0);
                     gpu_for(0, (k / block_k), [&](gpu_uint bk) {
-                        matrix::warp_matrix<a_float_type> A(
+                        matrix::warp_matrix<typename make_cpu<a_float_type_nodebug>::type> A(
                             block_m, block_k, Abuf_fast.begin() + block * block_m * block_k, matrix::layout_optimal);
-                        matrix::warp_matrix<b_float_type> B(
+                        matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                             block_k, block_n, Bbuf_fast.begin() + block * block_k * block_n, matrix::layout_optimal);
                         D += A * B;
                     });
@@ -676,13 +685,13 @@ int main(int argc, char** argv)
         run_with_types<Thalf, Thalf, Tfloat>(device);
         run_with_types<Tbfloat16, Tbfloat16, Tfloat>(device);
         run_with_types<Tfloat, Tfloat, Tfloat>(device);
-        run_with_types<precision::fp8e4m3, precision::fp8e5m2, Tfloat>(device);
+        run_with_types<Tdebugtype<precision::fp8e4m3>, Tdebugtype<precision::fp8e5m2>, Tfloat>(device);
         // run_with_types<precision::fp8e3m2, precision::fp8e2m3, Tfloat>(device);
         // run_with_types<precision::fp8e2m1, precision::fp8e2m1, Tfloat>(device);
-        run_with_types<precision::fp4e2m1, precision::fp4e2m1, Tfloat>(device);
+        run_with_types<Tdebugtype<precision::fp4e2m1>, Tdebugtype<precision::fp4e2m1>, Tfloat>(device);
         run_with_types<Ttf32, Ttf32, Tfloat>(device);
         run_with_types<Tint8_t, Tint8_t, Tint>(device);
-        run_with_types<precision::int4, precision::int4, Tint>(device);
+        run_with_types<Tdebugtype<precision::int4>, Tdebugtype<precision::int4>, Tint>(device);
         run_with_types<Tdouble, Tdouble, Tdouble>(device);
 
         cout << endl;
