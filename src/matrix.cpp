@@ -683,10 +683,13 @@ try
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
          << " TOPS" << endl;
 
-    cout << "verifying..." << flush;
-    double err = verify<a_float_type, b_float_type, c_float_type>(
-        const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
-    cout << " err=" << err << endl;
+    if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
+    {
+        cout << "verifying..." << flush;
+        double err = verify<a_float_type, b_float_type, c_float_type>(
+            const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
+        cout << " err=" << err << endl;
+    }
 }
 catch (std::exception& e)
 {
@@ -699,19 +702,17 @@ void run_with_types(goopax_device device)
     cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
          << ", T_B=" << type_name(type_enum<b_float_type>::value)
          << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
-    if constexpr (bitsize<a_float_type>::value == 8)
+    if constexpr (bitsize<a_float_type>::value >= 8)
     {
         run2<a_float_type, b_float_type, c_float_type>(device);
     }
-    /*
-      run<a_float_type, b_float_type, c_float_type, false>(device, false);
+    run<a_float_type, b_float_type, c_float_type, false>(device, false);
     run<a_float_type, b_float_type, c_float_type, false>(device, true);
     if constexpr (!std::is_same_v<a_float_type, double>)
     {
         run<a_float_type, b_float_type, c_float_type, true>(device, false);
         run<a_float_type, b_float_type, c_float_type, true>(device, true);
     }
-    */
     cout << endl;
 }
 
