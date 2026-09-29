@@ -1,8 +1,18 @@
 include(CheckCXXSourceCompiles)
 
-add_subdirectory(MUSIC2)
-
+option(BUILD_MUSIC "build MUSIC (for cosmological initial conditions)")
 find_package(HDF5)
+
+if (BUILD_MUSIC)
+   ExternalProject_Add(
+  build_music
+  GIT_REPOSITORY https://github.com/cosmo-sims/MUSIC2.git
+  CMAKE_ARGS "${MY_CMAKE_ARGS}"
+  "${MY_SDL_ARGS}"
+  INSTALL_COMMAND ""
+#  "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/music"
+)
+endif()
 
 
 check_cxx_source_compiles([[
