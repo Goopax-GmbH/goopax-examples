@@ -20,9 +20,6 @@
 #include <set>
 #include <stack>
 
-#define SURROUNDING1 0
-#define SURROUNDING2 1
-
 #define MULTIPOLE_ORDER 4
 #define HAVE_BFLOAT16 1
 
@@ -465,12 +462,7 @@ struct Cosmos : public CosmosData<T>
 
     buffer<treenode<T>> tree;
 
-#if SURROUNDING1
-    buffer<Tuint> surrounding_buf;
-#endif
-#if SURROUNDING2
     buffer<gpu_array<Tuint, 6>> surrounding2_buf;
-#endif
 
     vector<pair<Tuint, Tuint>> treeranges;
     vector<array<Tuint, 3>> treeranges_withchild_nochild;
@@ -493,15 +485,6 @@ struct Cosmos : public CosmosData<T>
         return vdata.vicinity_vec.size();
     }
 
-#if SURROUNDING1
-    gpu_uint& surrounding_link(gpu_uint node, gpu_uint k)
-    {
-        gpu_assert(k < num_surrounding());
-        return surrounding_buf[node * num_surrounding() + k];
-    }
-#endif
-
-#if SURROUNDING2
     vector<tuple<gpu_uint, Tuint, Vector<Tint, 3>>>
     get_surrounding(gpu_uint self, gpu_uint parent, Tuint max_depth, bool with_self, bool use_scratch) const
     {
@@ -632,41 +615,8 @@ struct Cosmos : public CosmosData<T>
         assert(have.size() == num_surrounding() + 1);
         return ret;
     }
-#endif
 
     buffer<Node_memory_request<>> node_offsets;
-
-    /*
-      void print(auto& tree, pair<Tuint, Tuint> treerange, bool with_surrounding = false)
-      {
-          const_buffer_map map(tree);
-  #if SURROUNDING1
-          const_buffer_map surrounding(this->surrounding_buf);
-  #endif
-  #if SURROUNDING2
-          const_buffer_map surrounding2(this->surrounding2_buf);
-  #endif
-          for (unsigned int k = treerange.first; k < treerange.second; ++k)
-          {
-              cout << k << ": " << map[k];
-              if (with_surrounding)
-              {
-  #if SURROUNDING1
-                  cout << ". surrounding:";
-                  for (unsigned int s = 0; s < this->num_surrounding(); ++s)
-                  {
-                      cout << " " << surrounding[k * this->num_surrounding() + s];
-                  }
-  #endif
-  #if SURROUNDING2
-                  cout << ". surrounding2:";
-                  cout << " " << surrounding2[k];
-  #endif
-              }
-              cout << endl;
-          }
-      }
-    */
 
     kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
 
@@ -734,12 +684,7 @@ struct Cosmos : public CosmosData<T>
     void make_tree_base()
     {
         cout << "make_tree_base" << endl;
-#if SURROUNDING1
-        surrounding_buf.fill(0, 0, 4 * num_surrounding());
-#endif
-#if SURROUNDING2
         surrounding2_buf.fill(zero, 0, 4);
-#endif
         {
             buffer_map tree(this->tree, 0, 2 + (1 << (min_tree_depth + 1)));
             tree[2].parent = 0;
@@ -861,12 +806,7 @@ struct Cosmos : public CosmosData<T>
 
 #if GOOPAX_DEBUG
         scratch_tree.fill({});
-#if SURROUNDING1
-        surrounding_buf.fill({}, treeoffset * num_surrounding(), surrounding_buf.size());
-#endif
-#if SURROUNDING2
         surrounding2_buf.fill({}, treeoffset, surrounding2_buf.size());
-#endif
 #endif
 
         scratch_tree.fill(zero, 0, 2);
@@ -1436,12 +1376,7 @@ struct Cosmos : public CosmosData<T>
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
         , tree(device, max_treesize)
-#if SURROUNDING1
-        , surrounding_buf(device, max_treesize * num_surrounding())
-#endif
-#if SURROUNDING2
         , surrounding2_buf(device, max_treesize)
-#endif
         , partnode_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , matter_tree(device, this->max_treesize)
@@ -1497,16 +1432,6 @@ struct Cosmos : public CosmosData<T>
                     show.need_split = {};
                     show.is_partnode = {};
 
-#if SURROUNDING1
-                    gpu_uint totnum_old = scratch_tree[self].pend - scratch_tree[self].pbegin;
-                    for (unsigned int si = 0; si < num_surrounding(); ++si)
-                    {
-                        gpu_uint cousin = surrounding_link(self, si);
-                        totnum_old += scratch_tree[cousin].pend - scratch_tree[cousin].pbegin;
-                    }
-#endif
-
-#if SURROUNDING2
                     gpu_uint totnum0 = 0;
                     for (auto cousin : get_surrounding(self, parent, 0, true, true))
                     {
@@ -1558,22 +1483,8 @@ struct Cosmos : public CosmosData<T>
                             totnum3 += tree[get<0>(cousin)].pend - tree[get<0>(cousin)].pbegin;
                         }
                     }
-#endif
 
-#if SURROUNDING1 && SURROUNDING2
-                    gpu_if(max({ totnum_old, totnum0, totnum1, totnum2, totnum3 }) > max_nodesize)
-                    {
-                        gpu_assert(totnum_old == totnum0);
-                        gpu_assert(totnum_old == totnum1);
-                        gpu_assert(totnum_old == totnum2);
-                        gpu_assert(totnum_old == totnum3);
-                    }
-#endif
-#if SURROUNDING1
-                    gpu_uint totnum = totnum_old;
-#else
-		gpu_uint totnum = totnum3;
-#endif
+                    gpu_uint totnum = totnum3;
 
                     // If true, force calculation wants to go further down the tree.
                     scratch_tree[self].need_split = (totnum > max_nodesize);
@@ -1604,19 +1515,7 @@ struct Cosmos : public CosmosData<T>
                     gpu_uint parent = parent_begin + (self - treerange.first) / 2;
 
                     gpu_bool has_children;
-#if SURROUNDING1
-                    gpu_bool has_children1 = scratch_tree[self].need_split;
-                    {
-                        for (unsigned int si = 0; si < num_surrounding(); ++si)
-                        {
-                            gpu_uint cousin = surrounding_link(self, si);
-                            has_children1 = has_children1 || (scratch_tree[cousin].need_split);
-                        }
-                    }
-                    has_children = has_children1;
-#endif
 
-#if SURROUNDING2
                     gpu_bool has_children2 = false;
                     for (auto cousin : get_surrounding(self, parent, 0, true, true))
                     {
@@ -1626,11 +1525,6 @@ struct Cosmos : public CosmosData<T>
                     // calculation wants to continue in this node, or because it is used by another node
                     // in the vicinity.
                     has_children = has_children2;
-#endif
-
-#if SURROUNDING1 && SURROUNDING2
-                    gpu_assert(has_children1 == has_children2);
-#endif
 
                     scratch_tree[self].has_children = has_children;
 
@@ -1900,7 +1794,6 @@ struct Cosmos : public CosmosData<T>
                         }
                     };
 
-#if SURROUNDING2
                     array<array<gpu_uint, 6>, 2> surr_tmp;
                     for (Tuint c = 0; c < 2; ++c)
                     {
@@ -1914,40 +1807,12 @@ struct Cosmos : public CosmosData<T>
                         };
                     }
 
-#endif
-
                     for (Tuint c = 0; c < 2; ++c)
                     {
                         gpu_uint self = get_child(parent, c);
                         gpu_assert(self >= treerange.first);
                         gpu_assert(self < treerange.second);
 
-#if SURROUNDING1
-                        for (Tuint si = 0; si < num_surrounding(); ++si)
-                        {
-                            Vector<Tint, 3> childvec = vdata.vicinity_vec[si];
-                            Vector<Tint, 3> parentvec = vdata.child2parent(childvec, c);
-                            auto parent_si_p = ranges::find(vdata.vicinity_vec, parentvec);
-
-                            if (parent_si_p == vdata.vicinity_vec.end())
-                            {
-                                if (parentvec.squaredNorm() != 0)
-                                {
-                                    cout << "BAD: parentvec=" << parentvec
-                                         << " not 0. Perhaps max_distfac is too small." << endl;
-                                    throw std::runtime_error("BAD: parentvec not 0.");
-                                }
-                                // adding sibling
-                                surrounding_link(self, si) = get_child(parent, 1 - c);
-                            }
-                            else
-                            {
-                                gpu_uint uncle = surrounding_link(parent, parent_si_p - vdata.vicinity_vec.begin());
-                                surrounding_link(self, si) = get_child(uncle, (childvec[2] + c) % 2);
-                            }
-                        }
-#endif
-#if SURROUNDING2
                         surrounding2_buf[self][0] = surr_tmp[c][0];
                         surrounding2_buf[self][1] = surr_tmp[c][1];
                         surrounding2_buf[self][2] = surr_tmp[c][2];
@@ -1970,7 +1835,6 @@ struct Cosmos : public CosmosData<T>
                             gpu_assert(tree[surrounding2_buf[self][5]].rcenter[2] > tree[self].rcenter[2]
                                        || surrounding2_buf[self][5] < 2u);
                         }
-#endif
                     }
                 });
             };
@@ -2179,55 +2043,6 @@ struct Cosmos : public CosmosData<T>
                             }
                         }
 
-#if SURROUNDING1
-                        vector<Vector<gpu_T, 3>> F1(cat[c], { 0, 0, 0 });
-                        vector<gpu_T> P1(cat[c], 0);
-                        {
-                            // Starting with the self node, since it is not included in the surrounding list.
-                            gpu_int si = -1;
-                            gpu_uint other_node = self; // surrounding_link(self, si);
-                            gpu_uint other_p = tree[other_node].pbegin;
-                            gpu_uint other_pend = tree[other_node].pend;
-
-                            gpu_bool docontinue = true;
-                            gpu_while(docontinue)
-                            {
-                                for (Tuint k = 0; k < cat[c]; ++k)
-                                {
-                                    const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
-#if CONSTANT_MASS
-                                    const gpu_T mass_other = constantMass;
-#else
-                                    const gpu_T mass_other = mass[other_p];
-#endif
-
-                                    F1[k] += dist
-                                             * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
-                                                * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
-
-                                    gpu_if(dist.squaredNorm() != 0)
-                                    {
-                                        P1[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
-                                    }
-                                }
-                                ++other_p;
-                                gpu_while(other_p == other_pend)
-                                {
-                                    ++si;
-                                    gpu_if(si == num_surrounding())
-                                    {
-                                        docontinue = false;
-                                        gpu_break();
-                                    }
-                                    other_node = surrounding_link(self, si);
-                                    other_p = tree[other_node].pbegin;
-                                    other_pend = tree[other_node].pend;
-                                }
-                            }
-                        }
-#endif
-
-#if SURROUNDING2
                         vector<Vector<gpu_T, 3>> F2(cat[c], { 0, 0, 0 });
                         vector<gpu_T> P2(cat[c], 0);
                         {
@@ -2284,22 +2099,11 @@ struct Cosmos : public CosmosData<T>
                                 }
                             }
                         }
-#endif
 
                         for (Tuint k = 0; k < cat[c]; ++k)
                         {
-#if SURROUNDING1 && SURROUNDING2
-                            gpu_assert((F1[k] - F2[k]).squaredNorm() < 1.f);
-                            gpu_assert(abs(P1[k] - P2[k]) < 1E-5f);
-#endif
-
-#if SURROUNDING1
-                            Vector<gpu_T, 3> F = F1[k];
-                            gpu_T P = P1[k];
-#else
                             Vector<gpu_T, 3> F = F2[k];
                             gpu_T P = P2[k];
-#endif
 
                             gpu_if(k < N || k < min_N)
                             {
@@ -2392,48 +2196,6 @@ struct Cosmos : public CosmosData<T>
 
                         const auto parent_treenode = force_tree[parent % force_tree.size()];
 
-#if SURROUNDING1
-                        array<gpu_force_multipole_f32, 2> new_multipole_f32_1 = zero;
-                        array<gpu_force_multipole_bf16, 2> new_multipole_bf16_1 = zero;
-                        Tuint count1 = 0;
-                        for (Tuint parent_si = 0; parent_si < this->num_surrounding() + 1; ++parent_si)
-                        {
-                            Vector<Tint, 3> unclevec;
-                            if (parent_si < this->num_surrounding())
-                            {
-                                unclevec = vdata.vicinity_vec[parent_si];
-                            }
-                            else
-                            {
-                                unclevec = { 0, 0, 0 };
-                            }
-
-                            for (int c = 0; c < 2; ++c)
-                            {
-                                for (int c2 = 0; c2 < 2; ++c2)
-                                {
-                                    Vector<Tint, 3> cousinvec = vdata.parent2child(unclevec, c2 - c);
-                                    if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
-                                        && cousinvec.squaredNorm() != 0)
-                                    {
-                                        gpu_uint cousin = this->tree[(parent_si == this->num_surrounding()
-                                                                          ? parent
-                                                                          : this->surrounding_link(parent, parent_si))]
-                                                              .children[c2];
-
-                                        matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
-                                                                      &new_multipole_f32_1[c],
-                                                                      &new_multipole_bf16_1[c]);
-
-                                        ++count1;
-                                    }
-                                }
-                            }
-                        }
-
-                        assert(count1 == (this->num_surrounding() + 1) * 2);
-#endif
-#if SURROUNDING2
                         array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
                         array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
 
@@ -2460,28 +2222,12 @@ struct Cosmos : public CosmosData<T>
                             }
                         }
                         assert(count2 == (this->num_surrounding() + 1) * 2);
-#endif
-
-#if SURROUNDING1 && SURROUNDING2
-                        for (int c = 0; c < 2; ++c)
-                        {
-                            gpu_assert((new_multipole_f32_1[c].calc_force(Vector<double, 3>{ 0.7, 0.5, -0.8 })
-                                        - new_multipole_f32_2[c].calc_force(Vector<double, 3>{ 0.7, 0.5, -0.8 }))
-                                           .squaredNorm()
-                                       < 1E-5f);
-                        }
-#endif
 
                         for (int c = 0; c < 2; ++c)
                         {
-#if SURROUNDING1
                             gpu_force_multipole new_multipole =
-                                static_cast<gpu_force_multipole>(new_multipole_bf16_1[c]);
-                            new_multipole += static_cast<gpu_force_multipole>(new_multipole_f32_1[c]);
-#else
-                        gpu_force_multipole new_multipole = static_cast<gpu_force_multipole>(new_multipole_bf16_2[c]);
-                        new_multipole += static_cast<gpu_force_multipole>(new_multipole_f32_2[c]);
-#endif
+                                static_cast<gpu_force_multipole>(new_multipole_bf16_2[c]);
+                            new_multipole += static_cast<gpu_force_multipole>(new_multipole_f32_2[c]);
 
                             Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
                             new_multipole += parent_treenode.rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
