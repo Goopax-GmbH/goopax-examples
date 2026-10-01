@@ -20,8 +20,6 @@
 #include <set>
 #include <stack>
 
-#define SURROUNDING2 1
-
 #define MULTIPOLE_ORDER 4
 #define HAVE_BFLOAT16 1
 
@@ -464,9 +462,7 @@ struct Cosmos : public CosmosData<T>
 
     buffer<treenode<T>> tree;
 
-#if SURROUNDING2
     buffer<gpu_array<Tuint, 6>> surrounding2_buf;
-#endif
 
     vector<pair<Tuint, Tuint>> treeranges;
     vector<array<Tuint, 3>> treeranges_withchild_nochild;
@@ -489,7 +485,6 @@ struct Cosmos : public CosmosData<T>
         return vdata.vicinity_vec.size();
     }
 
-#if SURROUNDING2
     vector<tuple<gpu_uint, Tuint, Vector<Tint, 3>>>
     get_surrounding(gpu_uint self, gpu_uint parent, Tuint max_depth, bool with_self, bool use_scratch) const
     {
@@ -620,7 +615,6 @@ struct Cosmos : public CosmosData<T>
         assert(have.size() == num_surrounding() + 1);
         return ret;
     }
-#endif
 
     buffer<Node_memory_request<>> node_memory_request;
 
@@ -690,9 +684,7 @@ struct Cosmos : public CosmosData<T>
     void make_tree_base()
     {
         cout << "make_tree_base" << endl;
-#if SURROUNDING2
         surrounding2_buf.fill(zero, 0, 4);
-#endif
         {
             buffer_map tree(this->tree, 0, 2 + (1 << (min_tree_depth + 1)));
             tree[2].parent = 0;
@@ -814,9 +806,7 @@ struct Cosmos : public CosmosData<T>
 
 #if GOOPAX_DEBUG
         scratch_tree.fill({});
-#if SURROUNDING2
         surrounding2_buf.fill({}, treeoffset, surrounding2_buf.size());
-#endif
 #endif
 
         scratch_tree.fill(zero, 0, 2);
@@ -1386,9 +1376,7 @@ struct Cosmos : public CosmosData<T>
         , max_treesize(max_treesize0)
         , max_nodesize(max_nodesize0)
         , tree(device, max_treesize)
-#if SURROUNDING2
         , surrounding2_buf(device, max_treesize)
-#endif
         , partnode_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , matter_tree(device, this->max_treesize)
@@ -1444,7 +1432,6 @@ struct Cosmos : public CosmosData<T>
                     show.need_split = {};
                     show.is_partnode = {};
 
-#if SURROUNDING2
                     gpu_uint totnum0 = 0;
                     for (auto cousin : get_surrounding(self, parent, 0, true, true))
                     {
@@ -1496,7 +1483,6 @@ struct Cosmos : public CosmosData<T>
                             totnum3 += tree[get<0>(cousin)].pend - tree[get<0>(cousin)].pbegin;
                         }
                     }
-#endif
 
                     gpu_uint totnum = totnum3;
 
@@ -1530,7 +1516,6 @@ struct Cosmos : public CosmosData<T>
 
                     gpu_bool has_children;
 
-#if SURROUNDING2
                     gpu_bool has_children2 = false;
                     for (auto cousin : get_surrounding(self, parent, 0, true, true))
                     {
@@ -1540,7 +1525,6 @@ struct Cosmos : public CosmosData<T>
                     // calculation wants to continue in this node, or because it is used by another node
                     // in the vicinity.
                     has_children = has_children2;
-#endif
 
                     scratch_tree[self].has_children = has_children;
 
@@ -1810,7 +1794,6 @@ struct Cosmos : public CosmosData<T>
                         }
                     };
 
-#if SURROUNDING2
                     array<array<gpu_uint, 6>, 2> surr_tmp;
                     for (Tuint c = 0; c < 2; ++c)
                     {
@@ -1824,15 +1807,12 @@ struct Cosmos : public CosmosData<T>
                         };
                     }
 
-#endif
-
                     for (Tuint c = 0; c < 2; ++c)
                     {
                         gpu_uint self = get_child(parent, c);
                         gpu_assert(self >= treerange.first);
                         gpu_assert(self < treerange.second);
 
-#if SURROUNDING2
                         surrounding2_buf[self][0] = surr_tmp[c][0];
                         surrounding2_buf[self][1] = surr_tmp[c][1];
                         surrounding2_buf[self][2] = surr_tmp[c][2];
@@ -1855,7 +1835,6 @@ struct Cosmos : public CosmosData<T>
                             gpu_assert(tree[surrounding2_buf[self][5]].rcenter[2] > tree[self].rcenter[2]
                                        || surrounding2_buf[self][5] < 2u);
                         }
-#endif
                     }
                 });
             };
@@ -2064,7 +2043,6 @@ struct Cosmos : public CosmosData<T>
                             }
                         }
 
-#if SURROUNDING2
                         vector<Vector<gpu_T, 3>> F2(cat[c], { 0, 0, 0 });
                         vector<gpu_T> P2(cat[c], 0);
                         {
@@ -2121,7 +2099,6 @@ struct Cosmos : public CosmosData<T>
                                 }
                             }
                         }
-#endif
 
                         for (Tuint k = 0; k < cat[c]; ++k)
                         {
@@ -2219,7 +2196,6 @@ struct Cosmos : public CosmosData<T>
 
                         const auto parent_treenode = force_tree[parent % force_tree.size()];
 
-#if SURROUNDING2
                         array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
                         array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
 
@@ -2246,7 +2222,6 @@ struct Cosmos : public CosmosData<T>
                             }
                         }
                         assert(count2 == (this->num_surrounding() + 1) * 2);
-#endif
 
                         for (int c = 0; c < 2; ++c)
                         {
