@@ -616,7 +616,7 @@ struct Cosmos : public CosmosData<T>
         return ret;
     }
 
-    buffer<Node_memory_request<>> node_memory_request;
+    buffer<Node_memory_request<>> node_offsets;
 
     kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
 
@@ -885,7 +885,7 @@ struct Cosmos : public CosmosData<T>
                             sum += n;
                         }
                     }
-                    this->node_memory_request.copy_from_host_async(
+                    this->node_offsets.copy_from_host_async(
                         nmr_scan.data()); // The scan results are used by treecount3.
 
                     split_ranges.push_back({ treeoffset, treeoffset + sum.split });
@@ -1544,7 +1544,7 @@ struct Cosmos : public CosmosData<T>
                 return gather_add(nmr);
             });
 
-            this->node_memory_request.assign(device, treecount2.num_groups());
+            this->node_offsets.assign(device, treecount2.num_groups());
 
             treecount3.assign(
                 device,
@@ -1556,7 +1556,7 @@ struct Cosmos : public CosmosData<T>
                         reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
                     auto old_node_p = scratch.begin() + scratch_offset_old_node;
 
-                    Node_memory_request<gpu_uint> next = memory_offset + this->node_memory_request[group_id()];
+                    Node_memory_request<gpu_uint> next = memory_offset + this->node_offsets[group_id()];
                     auto oldnext = next;
 
                     // Choosing loop order here in such a way that neighboring nodes in space will also be neighboring
