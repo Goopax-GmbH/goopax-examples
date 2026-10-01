@@ -3,16 +3,15 @@ include(CheckCXXSourceCompiles)
 option(BUILD_MUSIC "build MUSIC (for cosmological initial conditions)")
 find_package(HDF5)
 
-if (BUILD_MUSIC)
-   ExternalProject_Add(
+ExternalProject_Add(
   build_music
+  EXCLUDE_FROM_ALL 1
   GIT_REPOSITORY https://github.com/cosmo-sims/MUSIC2.git
   CMAKE_ARGS "${MY_CMAKE_ARGS}"
   "${MY_SDL_ARGS}"
-  INSTALL_COMMAND ""
+  INSTALL_COMMAND ln -s ${CMAKE_CURRENT_BINARY_DIR}/build_music-prefix/src/build_music-build/MUSIC ${CMAKE_CURRENT_SOURCE_DIR}/scripts/create_random.sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/goopax_logo_black.png ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ics_goopax.conf.in ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run.sh ${CMAKE_CURRENT_BINARY_DIR}/
 #  "-DCMAKE_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/music"
 )
-endif()
 
 
 check_cxx_source_compiles([[
