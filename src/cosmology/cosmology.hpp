@@ -634,44 +634,45 @@ struct Cosmos : public CosmosData<T>
     }
 #endif
 
-    buffer<Node_memory_request<>> node_memory_request;
+    buffer<Node_memory_request<>> node_offsets;
 
-    void print(auto& tree, pair<Tuint, Tuint> treerange, bool with_surrounding = false)
-    {
-        const_buffer_map map(tree);
-#if SURROUNDING1
-        const_buffer_map surrounding(this->surrounding_buf);
-#endif
-#if SURROUNDING2
-        const_buffer_map surrounding2(this->surrounding2_buf);
-#endif
-        for (unsigned int k = treerange.first; k < treerange.second; ++k)
-        {
-            cout << k << ": " << map[k];
-            if (with_surrounding)
-            {
-#if SURROUNDING1
-                cout << ". surrounding:";
-                for (unsigned int s = 0; s < this->num_surrounding(); ++s)
-                {
-                    cout << " " << surrounding[k * this->num_surrounding() + s];
-                }
-#endif
-#if SURROUNDING2
-                cout << ". surrounding2:";
-                cout << " " << surrounding2[k];
-#endif
-            }
-            cout << endl;
-        }
-    }
+    /*
+      void print(auto& tree, pair<Tuint, Tuint> treerange, bool with_surrounding = false)
+      {
+          const_buffer_map map(tree);
+  #if SURROUNDING1
+          const_buffer_map surrounding(this->surrounding_buf);
+  #endif
+  #if SURROUNDING2
+          const_buffer_map surrounding2(this->surrounding2_buf);
+  #endif
+          for (unsigned int k = treerange.first; k < treerange.second; ++k)
+          {
+              cout << k << ": " << map[k];
+              if (with_surrounding)
+              {
+  #if SURROUNDING1
+                  cout << ". surrounding:";
+                  for (unsigned int s = 0; s < this->num_surrounding(); ++s)
+                  {
+                      cout << " " << surrounding[k * this->num_surrounding() + s];
+                  }
+  #endif
+  #if SURROUNDING2
+                  cout << ". surrounding2:";
+                  cout << " " << surrounding2[k];
+  #endif
+              }
+              cout << endl;
+          }
+      }
+    */
 
     kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
 
     kernel<void(pair<Tuint, Tuint> treerange, Tuint parent_begin)> treecount1;
 
-    kernel<void(pair<Tuint, Tuint> treerange, Tuint parent_begin, buffer<Node_memory_request<>>& node_memory_request)>
-        treecount2;
+    kernel<Node_memory_request<>(pair<Tuint, Tuint> treerange, Tuint parent_begin)> treecount2;
 
     kernel<void(pair<Tuint, Tuint> treerange,
                 array<Tuint, 3> treeranges_parent_withchild_nochild,
@@ -887,6 +888,8 @@ struct Cosmos : public CosmosData<T>
                 { treeranges[min_tree_depth - 1].first, partnode_withchild_ranges[min_tree_depth - 1].second },
                 treeranges[min_tree_depth - 1].second);
 
+            vector<Node_memory_request<>> nmr_scan(this->treecount2.num_groups());
+
             for (Tuint depth = min_tree_depth; depth < MAX_DEPTH(); ++depth)
             {
                 pair<Tuint, Tuint> treerange = { treeoffset, treeoffset + treesize };
@@ -925,7 +928,7 @@ struct Cosmos : public CosmosData<T>
                 auto g2 = steady_clock::now();
 #endif
 
-                this->treecount2(treerange, treeranges[depth - 1].first, this->node_memory_request);
+                goopax_future<Node_memory_request<>> nmr = this->treecount2(treerange, treeranges[depth - 1].first);
 
 #if WITH_TIMINGS
                 device.wait_all();
@@ -935,14 +938,15 @@ struct Cosmos : public CosmosData<T>
                 {
                     Node_memory_request<Tuint> sum = zero;
                     {
-                        buffer_map node_memory_request(this->node_memory_request);
-                        for (auto& n : node_memory_request)
+                        auto nmr_scan_p = nmr_scan.begin();
+                        for (auto& n : nmr.get_group_results())
                         {
-                            auto tmp = n;
-                            n = sum;
-                            sum += tmp;
+                            *nmr_scan_p++ = sum;
+                            sum += n;
                         }
                     }
+                    this->node_offsets.copy_from_host_async(
+                        nmr_scan.data()); // The scan results are used by treecount3.
 
                     split_ranges.push_back({ treeoffset, treeoffset + sum.split });
                     treeoffset += sum.split;
@@ -1579,87 +1583,74 @@ struct Cosmos : public CosmosData<T>
             }));
 
         futures.push(std::async(policy, [&]() {
-            treecount2.assign(
-                device,
-                [this](pair<gpu_uint, gpu_uint> treerange,
-                       gpu_uint parent_begin,
-                       resource<Node_memory_request<>>& node_memory_request) {
-                    Node_memory_request<gpu_uint> nmr = zero;
+            treecount2.assign(device, [this](pair<gpu_uint, gpu_uint> treerange, gpu_uint parent_begin) {
+                Node_memory_request<gpu_uint> nmr = zero;
 
-                    // Choosing loop order here in such a way that neighboring nodes in space will also be
-                    // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
-                    // treecount3.
-                    gpu_uint group_begin =
-                        treerange.first
-                        + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first) * group_id()
-                                                        / num_groups()),
-                                  gpu_uint(2));
-                    gpu_uint group_end = treerange.first
-                                         + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
-                                                                         * (group_id() + 1) / num_groups()),
-                                                   gpu_uint(2));
+                // Choosing loop order here in such a way that neighboring nodes in space will also be
+                // neighboring nodes in memory. This loop must have the same ordering in treecount2 and
+                // treecount3.
+                gpu_uint group_begin = treerange.first
+                                       + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                       * group_id() / num_groups()),
+                                                 gpu_uint(2));
+                gpu_uint group_end = treerange.first
+                                     + intceil(static_cast<gpu_uint>(gpu_uint64(treerange.second - treerange.first)
+                                                                     * (group_id() + 1) / num_groups()),
+                                               gpu_uint(2));
 
-                    group_end = min(group_end, treerange.second);
+                group_end = min(group_end, treerange.second);
 
-                    gpu_for_local(group_begin, group_end, [&](gpu_uint self) {
-                        gpu_uint parent = parent_begin + (self - treerange.first) / 2;
+                gpu_for_local(group_begin, group_end, [&](gpu_uint self) {
+                    gpu_uint parent = parent_begin + (self - treerange.first) / 2;
 
-                        gpu_bool has_children;
+                    gpu_bool has_children;
 #if SURROUNDING1
-                        gpu_bool has_children1 = scratch_tree[self].need_split;
+                    gpu_bool has_children1 = scratch_tree[self].need_split;
+                    {
+                        for (unsigned int si = 0; si < num_surrounding(); ++si)
                         {
-                            for (unsigned int si = 0; si < num_surrounding(); ++si)
-                            {
-                                gpu_uint cousin = surrounding_link(self, si);
-                                has_children1 = has_children1 || (scratch_tree[cousin].need_split);
-                            }
+                            gpu_uint cousin = surrounding_link(self, si);
+                            has_children1 = has_children1 || (scratch_tree[cousin].need_split);
                         }
-                        has_children = has_children1;
+                    }
+                    has_children = has_children1;
 #endif
 
 #if SURROUNDING2
-                        gpu_bool has_children2 = false;
-                        for (auto cousin : get_surrounding(self, parent, 0, true, true))
-                        {
-                            has_children2 = has_children2 || (scratch_tree[get<0>(cousin)].need_split);
-                        }
-                        // If has_children is true, this node must further be split. Either because force
-                        // calculation wants to continue in this node, or because it is used by another node
-                        // in the vicinity.
-                        has_children = has_children2;
+                    gpu_bool has_children2 = false;
+                    for (auto cousin : get_surrounding(self, parent, 0, true, true))
+                    {
+                        has_children2 = has_children2 || (scratch_tree[get<0>(cousin)].need_split);
+                    }
+                    // If has_children is true, this node must further be split. Either because force
+                    // calculation wants to continue in this node, or because it is used by another node
+                    // in the vicinity.
+                    has_children = has_children2;
 #endif
 
 #if SURROUNDING1 && SURROUNDING2
-                        gpu_assert(has_children1 == has_children2);
+                    gpu_assert(has_children1 == has_children2);
 #endif
 
-                        scratch_tree[self].has_children = has_children;
+                    scratch_tree[self].has_children = has_children;
 
-                        Node_memory_request<gpu_bool> my = {
-                            .split = scratch_tree[self].need_split,
-                            .withchild =
-                                !scratch_tree[self].need_split && has_children && !scratch_tree[self].is_partnode,
-                            .partnode_withchild =
-                                !scratch_tree[self].need_split && has_children && scratch_tree[self].is_partnode,
-                            .partnode_leaf =
-                                !scratch_tree[self].need_split && !has_children && scratch_tree[self].is_partnode,
-                            .leaf = !scratch_tree[self].need_split && !has_children && !scratch_tree[self].is_partnode
-                        };
+                    Node_memory_request<gpu_bool> my = {
+                        .split = scratch_tree[self].need_split,
+                        .withchild = !scratch_tree[self].need_split && has_children && !scratch_tree[self].is_partnode,
+                        .partnode_withchild =
+                            !scratch_tree[self].need_split && has_children && scratch_tree[self].is_partnode,
+                        .partnode_leaf =
+                            !scratch_tree[self].need_split && !has_children && scratch_tree[self].is_partnode,
+                        .leaf = !scratch_tree[self].need_split && !has_children && !scratch_tree[self].is_partnode
+                    };
 
-                        auto old = nmr;
-                        nmr += my.cast<gpu_uint>();
-                    });
-
-                    nmr = work_group_reduce_add(nmr, local_size());
-
-                    gpu_if(local_id() == 0)
-                    {
-                        // Writing memory requirements for this workgroup.
-                        node_memory_request[group_id()] = nmr;
-                    }
+                    nmr += my.cast<gpu_uint>();
                 });
 
-            this->node_memory_request.assign(device, treecount2.num_groups());
+                return gather_add(nmr);
+            });
+
+            this->node_offsets.assign(device, treecount2.num_groups());
 
             treecount3.assign(
                 device,
@@ -1671,7 +1662,7 @@ struct Cosmos : public CosmosData<T>
                         reinterpret<gpu_type<array<Tuint, 2>*>>(scratch.begin() + scratch_offset_old_children);
                     auto old_node_p = scratch.begin() + scratch_offset_old_node;
 
-                    Node_memory_request<gpu_uint> next = memory_offset + this->node_memory_request[group_id()];
+                    Node_memory_request<gpu_uint> next = memory_offset + this->node_offsets[group_id()];
                     auto oldnext = next;
 
                     // Choosing loop order here in such a way that neighboring nodes in space will also be neighboring
