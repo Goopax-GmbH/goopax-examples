@@ -29,6 +29,8 @@ If you prefer not to build external libraries, you can start cmake by hand:
 
 In this case, only those examples are build, for which all required libraries are found.
 
+To run the cosmology example program, also read the comments at the top of file "cosmology/cosmology.cpp".
+
 
 Cross-Compiling for iOS
 -----------------------
