@@ -15,6 +15,21 @@
 
    By default, this program uses bfloat16 types for higher order terms.
    If your GPU does not support bfloat16, disable HAVE_BFLOAT16.
+
+   Use the mouse to rotate and zoom.
+   
+   The on-screen display is optimised for 4K with full-screen (press `f`). If you run in lower resolution, you will not see the info text, unless you make some adjustments.
+
+   
+   Using cosmological initial conditions created with MUSIC2:
+
+   For a quick start, you can build target `build_music` (only tested on Linux):
+
+     cd build/cosmology
+     make build_music
+
+   This will fetch the sources and build MUSIC2. It may have some additional dependencies, you will see. Then open another terminal and run the scripts `create_random.sh` and `run.sh` both in parallel. This will run the demo exactly as presented at the SC26.
+   
 */
 
 #include "cosmology.hpp"
