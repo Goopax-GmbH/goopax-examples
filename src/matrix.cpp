@@ -482,27 +482,31 @@ void fill_random(buffer<T>& a)
     k(a);
 }
 
-template<typename a_float_type, typename b_float_type, typename c_float_type>
+template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse>
 class Matmul
 {
-    static constexpr bool is_sparse = false;
     static constexpr bool with_block_scaling = false;
-
+    
 public:
     using a_float_type_nodebug = typename unrangetype<a_float_type>::type;
     using b_float_type_nodebug = typename unrangetype<b_float_type>::type;
     using c_float_type_nodebug = typename unrangetype<c_float_type>::type;
 
+    using matrix_a_t = typename std::conditional<is_sparse, matrix::sparse_matrix<a_float_type>, matrix::warp_matrix<a_float_type>>::type;
+    
     goopax_device device;
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
-
+    buffer<Tuint> sparse_md;
+    
     kernel<void(const buffer<a_float_type>& A)> prepare_A;
+    kernel<void(const buffer<a_float_type>& A)> prepare_A_from_dense;
     kernel<void(const buffer<b_float_type>& B)> prepare_B;
     kernel<void(buffer<c_float_type>& D)> multiply;
-
-    template<typename T>
+    
+    template<bool from_dense, typename T>
     auto prepare_func(buffer<T>& Mbuf_fast,
+                      buffer<Tuint>* M_md,
                       unsigned int rows,
                       unsigned int cols,
                       unsigned int tile_rows,
@@ -510,7 +514,7 @@ public:
                       matrix::use_t use,
                       const matrix::matrix_support_info* mi)
     {
-        return [rows, cols, tile_rows, tile_cols, use, mi, &Mbuf_fast](const resource<T>& Mbuf) {
+        return [rows, cols, tile_rows, tile_cols, use, mi, &Mbuf_fast, M_md, this](const resource<T>& Mbuf) {
             gpu_for_group(0, (rows / tile_rows) * (cols / tile_cols), [&](gpu_uint tile) {
                 gpu_uint tr;
                 gpu_uint tc;
@@ -528,15 +532,44 @@ public:
                 }
                 else abort();
                 
-                matrix::warp_matrix<typename unrangetype<T>::type> M(tile_rows,
-                                                                     tile_cols,
-                                                                     Mbuf.begin() + tr * tile_rows * cols
-                                                                     + tc * tile_cols,
-                                                                     matrix::row_major,
-                                                                     cols);
-                M.set_info(mi);
-                M.set_use(use);
-                M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols, matrix::layout_optimal);
+                if constexpr(is_sparse)
+                {
+                    matrix::sparse_matrix<typename unrangetype<T>::type> M(tile_rows, tile_cols);
+                    if constexpr(from_dense)
+                    {
+                        M.load_construct_from_dense( Mbuf.begin() + (tr * tile_rows * cols
+                                                     + tc * tile_cols),
+                               matrix::row_major,
+                               cols);
+                    }
+                    else
+                    {
+                        M.load( Mbuf.begin() + (tr * tile_rows * cols
+                                                     + tc * tile_cols) / mi->sparsity(use),
+                               matrix::row_major,
+                               cols);
+                    }
+                    M.set_info(mi);
+                    M.set_use(use);
+                    M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols / mi->sparsity(use), matrix::layout_optimal);
+                    if (sparse_md.empty())
+                    {
+                        sparse_md.assign(device, (rows / tile_rows) * (cols / tile_cols) * M.sparse_metadata().size() * mi->Nthreads);
+                    }
+                    M.store_metadata(M_md->begin() + tile*M.sparse_metadata().size());
+                }
+                else
+                {
+                    matrix::warp_matrix<typename unrangetype<T>::type> M(tile_rows,
+                                                                         tile_cols,
+                                                                         Mbuf.begin() + tr * tile_rows * cols
+                                                                         + tc * tile_cols,
+                                                                         matrix::row_major,
+                                                                         cols);
+                    M.set_info(mi);
+                    M.set_use(use);
+                    M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols, matrix::layout_optimal);
+                }
             });
         };
     }
@@ -581,13 +614,24 @@ public:
         cout << "using mi=" << *mi << endl;
         
         prepare_A.assign(
-                         device, prepare_func<a_float_type>(Abuf_fast, m, k, tile_m, tile_k, matrix::matrix_a, mi), ls, 0);
-        prepare_B.assign(device, prepare_func(Bbuf_fast, k, n, tile_k, tile_n, matrix::matrix_b, mi), ls, 0);
+                         device, prepare_func<false>(Abuf_fast, m, k, tile_m, tile_k, matrix::matrix_a, mi), ls, 0);
+        prepare_A_from_dense.assign(
+                         device, prepare_func<true>(Abuf_fast, m, k, tile_m, tile_k, matrix::matrix_a, mi), ls, 0);
+        prepare_B.assign(device, prepare_func<false>(Bbuf_fast, k, n, tile_k, tile_n, matrix::matrix_b, mi), ls, 0);
         
         multiply.assign(
                         device,
                         [&](resource<c_float_type>& Dbuf)
                         {
+                            Tuint sparse_md_tile_size;
+                            if constexpr(is_sparse)
+                            {
+                                matrix_a_t A(
+                                             tile_m,
+                                             tile_k);
+                                sparse_md_tile_size = A.sparse_metadata.size() * mi->Nthreads;
+                            }
+
                             if (ls == ws)
                             {
                                 gpu_for_group(0, (m / tile_m) * (n / tile_n ), [&](gpu_uint tile) {
@@ -599,11 +643,13 @@ public:
                                     D.fill(0);
                                     
                                     gpu_for(0, (k / tile_k), [&](gpu_uint tk) {
-                                        matrix::warp_matrix<typename make_cpu<a_float_type_nodebug>::type> A(
-                                                                                                             tile_m,
-                                                                                                             tile_k,
-                                                                                                             Abuf_fast.begin() + (tm * (k / tile_k) + tk) * tile_m * tile_k,
-                                                                                                             matrix::layout_optimal);
+                                        matrix_a_t A(tile_m, tile_k);
+                                            A.load(                                                                                                                    Abuf_fast.begin() + (tm * (k / tile_k) + tk) * tile_m * tile_k,
+                                                                                                                    matrix::layout_optimal);
+                                        if constexpr(is_sparse)
+                                        {
+                                            A.load_metadata(sparse_md.begin() + (tm * (k / tile_k) + tk) * sparse_md_tile_size);
+                                        }
                                         matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                                                                                                              tile_k,
                                                                                                              tile_n,
@@ -616,7 +662,7 @@ public:
                             else
                             {
                                 const bool use_bulk_copy = device.support_bulk_copy();
-                                mbarriers mbar(2, 2 + (mi->sparse_a.sparsity() != 1));
+                                mbarriers mbar(2, 2 + is_sparse);
                                 
                                 Tuint warps_m = exp2(log2(double(ls)/ws)/2);
                                 Tuint warps_n = (ls/ws)/warps_m;
@@ -638,10 +684,15 @@ public:
                                     
                                     array<local_mem<a_float_type>, 2> tmp_a;
                                     array<local_mem<b_float_type>, 2> tmp_b;
+                                    array<local_mem<Tuint>, 2> tmp_sparse_md;
                                     for (unsigned int slot=0; slot< 2; ++slot)
                                     {
                                         tmp_a[slot].assign(tile_k*bigtile_m);
                                         tmp_b[slot].assign(tile_k*bigtile_n);
+                                        if constexpr(is_sparse)
+                                        {
+                                            tmp_sparse_md[slot].assign(warps_m * sparse_md_tile_size);
+                                        }
                                     }
                                     
                                     auto fetch = [&](int slot, gpu_uint tk)
@@ -654,6 +705,13 @@ public:
                                                           Abuf_fast.begin() + (tk * (m/tile_m) + tm0) * tile_k * tile_m + tile_k*bigtile_m,
                                                           tmp_a[slot].begin(),
                                                           mbar(slot));
+                                                if constexpr(is_sparse)
+                                                {
+                                                    bulk_copy(sparse_md.begin() + (tk * (m/tile_m) + tm0) * sparse_md_tile_size,
+                                                              sparse_md.begin() + (tk * (m/tile_m) + tm0) * sparse_md_tile_size + sparse_md_tile_size * warps_m,
+                                                              tmp_a[slot].begin(),
+                                                              mbar(slot));
+                                                }
                                                 bulk_copy(Bbuf_fast.begin() + (tk * (n/tile_n) + tm0) * tile_k * tile_n,
                                                           Bbuf_fast.begin() + (tk * (n/tile_n) + tm0) * tile_k * tile_n + tile_k*bigtile_n,
                                                           tmp_b[slot].begin(),
@@ -670,6 +728,16 @@ public:
                                                 async_copy(Abuf_fast.begin() + (tk * (m/tile_m) + tm0) * tile_k * tile_m + i,
                                                            tmp_a[slot].begin() + i);
                                             });
+                                            if constexpr(is_sparse)
+                                            {
+                                                gpu_for_local(0,
+                                                              sparse_md_tile_size * warps_m,
+                                                              [&](gpu_uint i)
+                                                              {
+                                                    async_copy(sparse_md.begin() + (tk * (m/tile_m) + tm0) * sparse_md_tile_size + i,
+                                                               tmp_sparse_md[slot].begin() + i);
+                                                });
+                                            }
                                             
                                             gpu_for_local(0,
                                                           tile_k*bigtile_n,
@@ -786,13 +854,13 @@ double verify(span<const a_float_type> Adata,
     return (rhave - rwant).norm() / rwant.norm();
 }
 
-template<typename a_float_type, typename b_float_type, typename c_float_type>
+template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse>
 void run2(goopax_device device)
 try
 {
     cout << "run2. MNK=" << M << "," << N << "," << K << ", tile=" << TILE_M << "," << TILE_N << "," << TILE_K << endl;
 
-    Matmul<a_float_type, b_float_type, c_float_type> matmul(device, M, N, K, TILE_M, TILE_N, TILE_K);
+    Matmul<a_float_type, b_float_type, c_float_type, is_sparse> matmul(device, M, N, K, TILE_M, TILE_N, TILE_K);
 
     buffer<a_float_type> A(device, M * K);
     buffer<b_float_type> B(device, K * N);
@@ -840,7 +908,8 @@ void run_with_types(goopax_device device)
          << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
     if constexpr (bitsize<a_float_type>::value >= 8)
     {
-        run2<a_float_type, b_float_type, c_float_type>(device);
+        run2<a_float_type, b_float_type, c_float_type, false>(device);
+        run2<a_float_type, b_float_type, c_float_type, true>(device);
     }
     run<a_float_type, b_float_type, c_float_type, false>(device, false);
     run<a_float_type, b_float_type, c_float_type, false>(device, true);
