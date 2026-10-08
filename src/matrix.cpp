@@ -524,7 +524,7 @@ template<typename a_float_type,
          typename b_input_type,
          bool is_sparse,
          bool with_block_scaling,
-         typename bs_type = precision::fp8ue8m0>
+         typename bs_type = typename change_gpu_mode<precision::fp8ue8m0, a_float_type>::type>
 class Matmul
 {
 public:
@@ -536,6 +536,9 @@ public:
         conditional<is_sparse, matrix::sparse_matrix<a_float_type>, matrix::warp_matrix<a_float_type>>::type;
 
     goopax_device device;
+
+    const matrix::matrix_support_info* mi = nullptr;
+
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
     buffer<Tuint> sparse_md;
@@ -565,12 +568,12 @@ public:
                 gpu_uint tc;
 
                 // Arrange the tiles in row_major for matrix_b and col_major for matrix_a.
-                if (use == matrix::matrix_b)
+                if (use == matrix::matrix_b || use == matrix::matrix_block_scaling_b)
                 {
                     tr = tile / (cols / tile_cols);
                     tc = tile % (cols / tile_cols);
                 }
-                else if (use == matrix::matrix_a)
+                else if (use == matrix::matrix_a || use == matrix::matrix_block_scaling_a)
                 {
                     tc = tile / (rows / tile_rows);
                     tr = tile % (rows / tile_rows);
@@ -639,7 +642,6 @@ public:
             throw std::runtime_error("big matrix sizes must be multiples of tile sizes");
         }
 
-        const matrix::matrix_support_info* mi = nullptr;
         Tuint ws;
         for (const matrix::matrix_support_info* mi_try = device.get_matrix_support_table(); mi_try;
              mi_try = mi_try->next)
@@ -678,6 +680,9 @@ public:
             0);
         if constexpr (with_block_scaling)
         {
+            A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
+            B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
+
             prepare_A_bs.assign(device,
                                 prepare_func<false, bs_type>(A_bs_buf_fast,
                                                              nullptr,
@@ -972,10 +977,12 @@ public:
     }
 };
 
-template<typename a_float_type, typename b_float_type, typename c_float_type>
+template<typename a_float_type, typename b_float_type, typename c_float_type, typename scale_type>
 Tdouble verify(span<const a_float_type> Adata,
                span<const b_float_type> Bdata,
                span<const c_float_type> Ddata,
+               span<const scale_type> A_bs_data,
+               span<const scale_type> B_bs_data,
                unsigned int m,
                unsigned int n,
                unsigned int k)
@@ -1000,18 +1007,49 @@ Tdouble verify(span<const a_float_type> Adata,
         Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<c_float_type*>(Ddata.data()), m, n)
             .template cast<Tdouble>();
 
-    VectorX<Tdouble> rwant = A * (B * test_vector);
-    VectorX<Tdouble> rhave = D * test_vector;
-
     if (VERB)
     {
         cout << "A=\n" << A << endl;
         cout << "B=\n" << B << endl;
         cout << "D=\n" << D << endl;
+    }
+    if (!A_bs_data.empty())
+    {
+        unsigned int block_width = Adata.size() / A_bs_data.size();
+        MatrixX<scale_type> A_bs = Map<Matrix<scale_type, Dynamic, Dynamic, RowMajor>>(
+            const_cast<scale_type*>(A_bs_data.data()), m, k / block_width);
+        MatrixX<scale_type> B_bs = Map<Matrix<scale_type, Dynamic, Dynamic, RowMajor>>(
+            const_cast<scale_type*>(B_bs_data.data()), k / block_width, n);
+        for (unsigned int r = 0; r < m; ++r)
+        {
+            for (unsigned int c = 0; c < k; ++c)
+            {
+                A(r, c) *= A_bs(r, c / block_width);
+            }
+        }
+        for (unsigned int r = 0; r < k; ++r)
+        {
+            for (unsigned int c = 0; c < n; ++c)
+            {
+                B(r, c) *= B_bs(r / block_width, c);
+            }
+        }
+        if (VERB)
+        {
+            cout << "scaled_A=\n" << A << endl;
+            cout << "scaled_B=\n" << B << endl;
+        }
+    }
+    if (VERB)
+    {
         MatrixX<Tdouble> D_cpu = A * B;
         cout << "Dcpu=\n" << D_cpu << endl;
         cout << "diff=\n" << D - D_cpu << endl;
     }
+
+    VectorX<Tdouble> rwant = A * (B * test_vector);
+    VectorX<Tdouble> rhave = D * test_vector;
+
     return (rhave - rwant).norm() / rwant.norm();
 }
 
@@ -1037,11 +1075,25 @@ try
     fill_random(A);
     fill_random(B);
 
+    buffer<Tdebugtype<precision::fp8ue8m0>> A_bs;
+    buffer<Tdebugtype<precision::fp8ue8m0>> B_bs;
+
     device.wait_all();
     auto t0 = steady_clock::now();
 
     matmul.prepare_A(A);
     matmul.prepare_B(B);
+
+    if (with_block_scaling)
+    {
+        A_bs.assign(device, M * K / matmul.mi->block_scaling.block_width);
+        B_bs.assign(device, K * N / matmul.mi->block_scaling.block_width);
+        A_bs.fill(2);
+        B_bs.fill(4);
+
+        matmul.prepare_A_bs(A_bs);
+        matmul.prepare_B_bs(B_bs);
+    }
 
     device.wait_all();
     auto t1 = steady_clock::now();
@@ -1056,10 +1108,32 @@ try
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
          << " TOPS" << endl;
 
+    if (VERB)
+    {
+        if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
+        {
+            cout << "A_fast=" << matmul.Abuf_fast << endl;
+            cout << "B_fast=" << matmul.Bbuf_fast << endl;
+        }
+        if (with_block_scaling)
+        {
+            cout << "A_bs_fast=" << matmul.A_bs_buf_fast << endl;
+            cout << "B_bs_fast=" << matmul.B_bs_buf_fast << endl;
+        }
+    }
+
+    // if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
     {
         cout << "verifying..." << flush;
-        Tdouble err = verify<a_input_type, b_input_type, c_float_type>(
-            const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
+        Tdouble err =
+            verify<a_input_type, b_input_type, c_float_type, Tdebugtype<precision::fp8ue8m0>>(const_buffer_map(A),
+                                                                                              const_buffer_map(B),
+                                                                                              const_buffer_map(D),
+                                                                                              const_buffer_map(A_bs),
+                                                                                              const_buffer_map(B_bs),
+                                                                                              M,
+                                                                                              N,
+                                                                                              K);
         cout << " err=" << err << endl;
         assert(err < 0.01f);
     }
