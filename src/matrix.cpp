@@ -5,6 +5,7 @@
  */
 
 #include "common/matrix.hpp"
+#include "common/output.hpp"
 #include <cassert>
 #include <chrono>
 #include <goopax>
@@ -297,8 +298,10 @@ try
     cout << endl;
 
     // Matrix buffers
-    buffer<typename std::conditional<std::is_same_v<a_float_type, precision::tf32> && is_sparse, float, a_float_type>::
-               type>
+    buffer<typename std::conditional<std::is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>
+                                         && is_sparse,
+                                     Tfloat,
+                                     a_float_type>::type>
         A(device, M * K);
     buffer<b_float_type> B(device, K * N);
     buffer<c_float_type> C(device, M * N);
@@ -634,28 +637,31 @@ public:
             prepare_func<false, b_input_type>(Bbuf_fast, nullptr, k, n, tile_k, tile_n, matrix::matrix_b, mi),
             ls,
             0);
-        prepare_A_bs.assign(device,
-                            prepare_func<false, bs_type>(A_bs_buf_fast,
-                                                         nullptr,
-                                                         m,
-                                                         k / mi->block_scaling.block_width,
-                                                         tile_m,
-                                                         tile_k / mi->block_scaling.block_width,
-                                                         matrix::matrix_block_scaling_a,
-                                                         mi),
-                            ls,
-                            0);
-        prepare_B_bs.assign(device,
-                            prepare_func<false, bs_type>(B_bs_buf_fast,
-                                                         nullptr,
-                                                         k / mi->block_scaling.block_width,
-                                                         n,
-                                                         tile_k / mi->block_scaling.block_width,
-                                                         tile_n,
-                                                         matrix::matrix_block_scaling_b,
-                                                         mi),
-                            ls,
-                            0);
+        if constexpr (with_block_scaling)
+        {
+            prepare_A_bs.assign(device,
+                                prepare_func<false, bs_type>(A_bs_buf_fast,
+                                                             nullptr,
+                                                             m,
+                                                             k / mi->block_scaling.block_width,
+                                                             tile_m,
+                                                             tile_k / mi->block_scaling.block_width,
+                                                             matrix::matrix_block_scaling_a,
+                                                             mi),
+                                ls,
+                                0);
+            prepare_B_bs.assign(device,
+                                prepare_func<false, bs_type>(B_bs_buf_fast,
+                                                             nullptr,
+                                                             k / mi->block_scaling.block_width,
+                                                             n,
+                                                             tile_k / mi->block_scaling.block_width,
+                                                             tile_n,
+                                                             matrix::matrix_block_scaling_b,
+                                                             mi),
+                                ls,
+                                0);
+        }
 
         multiply.assign(
             device,
@@ -710,8 +716,21 @@ public:
                             else
                             {
                                 D += A * B;
+
+                                /*
+                                if constexpr(!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
+                                  {
+                                    gpu_cout << "thread " << global_id()
+                                         << ". tk=" << tk
+                                         << ":\n  A=" << A.coeffs()
+                                         << "\n  B=" << B.coeffs()
+                                         << "\n  D=" << D.coeffs()
+                                         << "\n";
+                                  }
+                                */
                             }
                         });
+                        D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
                     });
                 }
                 else
@@ -932,42 +951,42 @@ public:
 };
 
 template<typename a_float_type, typename b_float_type, typename c_float_type>
-double verify(span<const a_float_type> Adata,
-              span<const b_float_type> Bdata,
-              span<const c_float_type> Ddata,
-              unsigned int m,
-              unsigned int n,
-              unsigned int k)
+Tdouble verify(span<const a_float_type> Adata,
+               span<const b_float_type> Bdata,
+               span<const c_float_type> Ddata,
+               unsigned int m,
+               unsigned int n,
+               unsigned int k)
 {
-    VectorX<double> test_vector;
+    VectorX<Tdouble> test_vector;
     {
         std::default_random_engine generator;
         std::normal_distribution<double> distribution;
-        test_vector = VectorX<double>(N());
-        for (double& e : test_vector)
+        test_vector = VectorX<Tdouble>(N());
+        for (Tdouble& e : test_vector)
         {
             e = distribution(generator);
         }
     }
-    MatrixX<double> A =
+    MatrixX<Tdouble> A =
         Map<Matrix<a_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<a_float_type*>(Adata.data()), m, k)
-            .template cast<double>();
-    MatrixX<double> B =
+            .template cast<Tdouble>();
+    MatrixX<Tdouble> B =
         Map<Matrix<b_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<b_float_type*>(Bdata.data()), k, n)
-            .template cast<double>();
-    MatrixX<double> D =
+            .template cast<Tdouble>();
+    MatrixX<Tdouble> D =
         Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<c_float_type*>(Ddata.data()), m, n)
-            .template cast<double>();
+            .template cast<Tdouble>();
 
-    VectorX<double> rwant = A * (B * test_vector);
-    VectorX<double> rhave = D * test_vector;
+    VectorX<Tdouble> rwant = A * (B * test_vector);
+    VectorX<Tdouble> rhave = D * test_vector;
 
     if (VERB)
     {
         cout << "A=\n" << A << endl;
         cout << "B=\n" << B << endl;
         cout << "D=\n" << D << endl;
-        MatrixX<double> D_cpu = A * B;
+        MatrixX<Tdouble> D_cpu = A * B;
         cout << "Dcpu=\n" << D_cpu << endl;
         cout << "diff=\n" << D - D_cpu << endl;
     }
@@ -1017,7 +1036,7 @@ try
     if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
     {
         cout << "verifying..." << flush;
-        double err = verify<a_float_type, b_float_type, c_float_type>(
+        Tdouble err = verify<a_float_type, b_float_type, c_float_type>(
             const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
         cout << " err=" << err << endl;
     }
@@ -1047,7 +1066,7 @@ void run_with_types(goopax_device device)
     }
     run<a_float_type, b_float_type, c_float_type, false>(device, false);
     run<a_float_type, b_float_type, c_float_type, false>(device, true);
-    if constexpr (!std::is_same_v<a_float_type, double>)
+    if constexpr (!std::is_same_v<typename remove_debug<a_float_type>::type, double>)
     {
         run<a_float_type, b_float_type, c_float_type, true>(device, false);
         run<a_float_type, b_float_type, c_float_type, true>(device, true);
