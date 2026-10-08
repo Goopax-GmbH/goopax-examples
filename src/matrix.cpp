@@ -485,6 +485,38 @@ void fill_random(buffer<T>& a)
     k(a);
 }
 
+template<typename src_ptr_t, typename dest_ptr_t>
+void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t dest_orig)
+{
+    using value_t = typename goopax_remove_pointer<typename make_cpu<dest_ptr_t>::type>::type;
+    using uint_type = typename change_gpu_mode<uint32_t, value_t>::type;
+
+    assert(N_orig * bitsize<value_t>::value % bitsize<uint_type>::value == 0);
+    unsigned int N = N_orig * bitsize<value_t>::value / bitsize<uint_type>::value;
+    auto src = reinterpret<gpu_type<const uint_type*>>(src_orig);
+    auto dest = reinterpret<typename make_gpu_pointer<uint_type, memory::threadgroup>::type>(dest_orig);
+
+    unsigned int offset = 0;
+    for (unsigned int burst = 4; burst != 0; burst /= 2)
+    {
+        while ((N - offset) % (burst * local_size()) != 0)
+        {
+            for (unsigned int sub = 0; sub < burst; ++sub)
+            {
+                async_copy(src + local_id() * burst + (offset + sub), dest + local_id() * burst + (offset + sub));
+            }
+            offset += burst * local_size();
+        }
+    }
+    if (offset != 0)
+    {
+        gpu_if(local_id() < offset)
+        {
+            async_copy(src + local_id() + offset, dest + local_id() + offset);
+        }
+    }
+}
+
 template<typename a_float_type,
          typename b_float_type,
          typename c_float_type,
@@ -546,30 +578,37 @@ public:
                 else
                     abort();
 
-                if constexpr (is_sparse)
+                if (is_sparse && use == matrix::matrix_a)
                 {
-                    matrix::sparse_matrix<typename unrangetype<T>::type> M(tile_rows, tile_cols);
-                    if constexpr (from_dense)
+                    if constexpr (is_sparse)
                     {
-                        M.load_cast_construct_from_dense(Mbuf.begin() + (tr * tile_rows * cols + tc * tile_cols), cols);
+                        matrix::sparse_matrix<typename unrangetype<T>::type> M(tile_rows, tile_cols);
+                        if constexpr (from_dense)
+                        {
+                            M.load_cast_construct_from_dense(Mbuf.begin() + (tr * tile_rows * cols + tc * tile_cols),
+                                                             cols);
+                        }
+                        else
+                        {
+                            M.load_cast(Mbuf.begin() + (tr * tile_rows * cols + tc * tile_cols) / mi->sparsity(use),
+                                        matrix::row_major,
+                                        cols);
+                        }
+                        M.set_info(mi);
+                        M.set_use(use);
+                        M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols / mi->sparsity(use),
+                                matrix::layout_optimal);
+                        if (sparse_md.empty())
+                        {
+                            sparse_md.assign(device,
+                                             (rows / tile_rows) * (cols / tile_cols) * M.sparse_metadata().size()
+                                                 * mi->Nthreads);
+                        }
+                        if (M_md)
+                        {
+                            M.store_metadata(M_md->begin() + tile * M.sparse_metadata().size());
+                        }
                     }
-                    else
-                    {
-                        M.load_cast(Mbuf.begin() + (tr * tile_rows * cols + tc * tile_cols) / mi->sparsity(use),
-                                    matrix::row_major,
-                                    cols);
-                    }
-                    M.set_info(mi);
-                    M.set_use(use);
-                    M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols / mi->sparsity(use),
-                            matrix::layout_optimal);
-                    if (sparse_md.empty())
-                    {
-                        sparse_md.assign(device,
-                                         (rows / tile_rows) * (cols / tile_cols) * M.sparse_metadata().size()
-                                             * mi->Nthreads);
-                    }
-                    M.store_metadata(M_md->begin() + tile * M.sparse_metadata().size());
                 }
                 else
                 {
@@ -685,7 +724,7 @@ public:
 
                         gpu_for(0, (k / tile_k), [&](gpu_uint tk) {
                             matrix_a_t A(tile_m, tile_k);
-                            A.load(Abuf_fast.begin() + (tm * (k / tile_k) + tk) * tile_m * tile_k,
+                            A.load(Abuf_fast.begin() + (tk * (m / tile_m) + tm) * tile_m * tile_k,
                                    matrix::layout_optimal);
                             if constexpr (is_sparse)
                             {
@@ -694,7 +733,7 @@ public:
                             matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                                 tile_k,
                                 tile_n,
-                                Bbuf_fast.begin() + (tn * (k / tile_k) + tk) * tile_k * tile_n,
+                                Bbuf_fast.begin() + (tk * (n / tile_n) + tn) * tile_k * tile_n,
                                 matrix::layout_optimal);
 
                             if constexpr (with_block_scaling)
@@ -707,7 +746,7 @@ public:
                                                                   matrix::layout_optimal);
                                 matrix::warp_matrix<bs_type> B_bs(tile_k / mi->block_scaling.block_width,
                                                                   tile_n,
-                                                                  Bbuf_fast.begin()
+                                                                  B_bs_buf_fast.begin()
                                                                       + (tn * (k / tile_k) + tk) * tile_k * tile_n
                                                                             / mi->block_scaling.block_width,
                                                                   matrix::layout_optimal);
@@ -794,8 +833,8 @@ public:
                                                   tmp_sparse_md[slot].begin(),
                                                   mbar(slot));
                                     }
-                                    bulk_copy(Bbuf_fast.begin() + (tk * (n / tile_n) + tm0) * tile_k * tile_n,
-                                              Bbuf_fast.begin() + (tk * (n / tile_n) + tm0) * tile_k * tile_n
+                                    bulk_copy(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
+                                              Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n
                                                   + tile_k * bigtile_n,
                                               tmp_b[slot].begin(),
                                               mbar(slot));
@@ -824,49 +863,32 @@ public:
                             }
                             else
                             {
-                                gpu_for_local(0,
-                                              tile_k * bigtile_m,
-                                              par_unroll(128 / bitsize<a_float_type>::value),
-                                              [&](gpu_uint i) {
-                                                  async_copy(Abuf_fast.begin()
-                                                                 + (tk * (m / tile_m) + tm0) * tile_k * tile_m + i,
-                                                             tmp_a[slot].begin() + i);
-                                              });
+                                parallel_copy_async(Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m,
+                                                    tile_k * bigtile_m,
+                                                    tmp_a[slot].begin());
                                 if constexpr (is_sparse)
                                 {
-                                    gpu_for_local(0, sparse_md_tile_size * warps_m, [&](gpu_uint i) {
-                                        async_copy(sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size
-                                                       + i,
-                                                   tmp_sparse_md[slot].begin() + i);
-                                    });
+                                    parallel_copy_async(sparse_md.begin()
+                                                            + (tk * (m / tile_m) + tm0) * sparse_md_tile_size,
+                                                        sparse_md_tile_size * warps_m,
+                                                        tmp_sparse_md[slot].begin());
                                 }
+                                parallel_copy_async(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
+                                                    tile_k * bigtile_n,
+                                                    tmp_b[slot].begin());
 
-                                gpu_for_local(0,
-                                              tile_k * bigtile_n,
-                                              par_unroll(128 / bitsize<b_float_type>::value),
-                                              [&](gpu_uint i) {
-                                                  async_copy(Bbuf_fast.begin()
-                                                                 + (tk * (n / tile_n) + tn0) * tile_k * tile_n + i,
-                                                             tmp_b[slot].begin() + i);
-                                              });
                                 if constexpr (with_block_scaling)
                                 {
-                                    gpu_for_local(
-                                        0, tile_k * bigtile_m / mi->block_scaling.block_width, [&](gpu_uint i) {
-                                            async_copy(A_bs_buf_fast.begin()
-                                                           + (tk * (m / tile_m) + tm0) * tile_k * tile_m
-                                                                 / mi->block_scaling.block_width
-                                                           + i,
-                                                       tmp_bs_a[slot].begin() + i);
-                                        });
-                                    gpu_for_local(
-                                        0, tile_k * bigtile_n / mi->block_scaling.block_width, [&](gpu_uint i) {
-                                            async_copy(B_bs_buf_fast.begin()
-                                                           + (tk * (n / tile_n) + tn0) * tile_k * tile_n
-                                                                 / mi->block_scaling.block_width
-                                                           + i,
-                                                       tmp_bs_b[slot].begin() + i);
-                                        });
+                                    parallel_copy_async(A_bs_buf_fast.begin()
+                                                            + (tk * (m / tile_m) + tm0) * tile_k * tile_m
+                                                                  / mi->block_scaling.block_width,
+                                                        tile_k * bigtile_m / mi->block_scaling.block_width,
+                                                        tmp_bs_a[slot].begin());
+                                    parallel_copy_async(B_bs_buf_fast.begin()
+                                                            + (tk * (n / tile_n) + tn0) * tile_k * tile_n
+                                                                  / mi->block_scaling.block_width,
+                                                        tile_k * bigtile_n / mi->block_scaling.block_width,
+                                                        tmp_bs_b[slot].begin());
                                 }
 
                                 async_commit();
@@ -1003,10 +1025,11 @@ template<typename a_float_type,
 void run2(goopax_device device)
 try
 {
-    cout << "run2. MNK=" << M << "," << N << "," << K << ", tile=" << TILE_M << "," << TILE_N << "," << TILE_K << endl;
+    cout << "run2. MNK=" << M << "," << N << "," << K << ", tile=" << TILE_M << "," << TILE_N << "," << TILE_K
+         << ", is_sparse=" << is_sparse << ", with_block_scaling=" << with_block_scaling << endl;
 
     Matmul<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, is_sparse, with_block_scaling> matmul(
-        device, M, N, K, TILE_M, TILE_N, TILE_K, 32);
+        device, M, N, K, TILE_M, TILE_N, TILE_K, 1);
 
     buffer<a_input_type> A(device, M * K);
     buffer<b_input_type> B(device, K * N);
@@ -1033,12 +1056,12 @@ try
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
          << " TOPS" << endl;
 
-    if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
     {
         cout << "verifying..." << flush;
-        Tdouble err = verify<a_float_type, b_float_type, c_float_type>(
+        Tdouble err = verify<a_input_type, b_input_type, c_float_type>(
             const_buffer_map(A), const_buffer_map(B), const_buffer_map(D), M, N, K);
         cout << " err=" << err << endl;
+        assert(err < 0.01f);
     }
 }
 catch (std::exception& e)
@@ -1064,6 +1087,12 @@ void run_with_types(goopax_device device)
             run2<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, true, false>(device);
         }
     }
+    run2<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, false, true>(device);
+    if constexpr (bitsize<a_float_type>::value <= 32)
+    {
+        run2<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, true, true>(device);
+    }
+    /*
     run<a_float_type, b_float_type, c_float_type, false>(device, false);
     run<a_float_type, b_float_type, c_float_type, false>(device, true);
     if constexpr (!std::is_same_v<typename remove_debug<a_float_type>::type, double>)
@@ -1071,6 +1100,7 @@ void run_with_types(goopax_device device)
         run<a_float_type, b_float_type, c_float_type, true>(device, false);
         run<a_float_type, b_float_type, c_float_type, true>(device, true);
     }
+    */
     cout << endl;
 }
 
