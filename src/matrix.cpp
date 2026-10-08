@@ -482,11 +482,9 @@ void fill_random(buffer<T>& a)
     k(a);
 }
 
-template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse>
+template<typename a_float_type, typename b_float_type, typename c_float_type, bool is_sparse, bool with_block_scaling, typename bs_type = precision::fp8ue8m0>
 class Matmul
 {
-    static constexpr bool with_block_scaling = false;
-    
 public:
     using a_float_type_nodebug = typename unrangetype<a_float_type>::type;
     using b_float_type_nodebug = typename unrangetype<b_float_type>::type;
@@ -498,10 +496,14 @@ public:
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
     buffer<Tuint> sparse_md;
-    
+    buffer<bs_type> A_bs_buf_fast;
+    buffer<bs_type> B_bs_buf_fast;
+
     kernel<void(const buffer<a_float_type>& A)> prepare_A;
     kernel<void(const buffer<a_float_type>& A)> prepare_A_from_dense;
     kernel<void(const buffer<b_float_type>& B)> prepare_B;
+    kernel<void(const buffer<bs_type>& A_bs)> prepare_A_bs;
+    kernel<void(const buffer<bs_type>& B_bs)> prepare_B_bs;
     kernel<void(buffer<c_float_type>& D)> multiply;
     
     template<bool from_dense, typename T>
@@ -618,7 +620,11 @@ public:
         prepare_A_from_dense.assign(
                          device, prepare_func<true>(Abuf_fast, m, k, tile_m, tile_k, matrix::matrix_a, mi), ls, 0);
         prepare_B.assign(device, prepare_func<false>(Bbuf_fast, k, n, tile_k, tile_n, matrix::matrix_b, mi), ls, 0);
-        
+        prepare_A_bs.assign(
+                         device, prepare_func<false>(A_bs_buf_fast, m, k/mi->block_scaling.block_width, tile_m, tile_k/mi->block_scaling.block_width, matrix::matrix_block_scaling_a, mi), ls, 0);
+        prepare_B_bs.assign(
+                         device, prepare_func<false>(B_bs_buf_fast, k/mi->block_scaling.block_width, n, tile_k/mi->block_scaling.block_width, tile_n, matrix::matrix_block_scaling_b, mi), ls, 0);
+
         multiply.assign(
                         device,
                         [&](resource<c_float_type>& Dbuf)
@@ -655,14 +661,30 @@ public:
                                                                                                              tile_n,
                                                                                                              Bbuf_fast.begin() + (tn * (k / tile_k) + tk) * tile_k * tile_n,
                                                                                                              matrix::layout_optimal);
-                                        D += A * B;
+                                        
+                                        if constexpr(with_block_scaling)
+                                        {
+                                            matrix::warp_matrix<bs_type> A_bs(tile_m, tile_k/mi->block_scaling.block_width,
+                                                                         A_bs_buf_fast.begin() + (tm * (k / tile_k) + tk) * tile_m * tile_k/mi->block_scaling.block_width,
+                                                                              matrix::layout_optimal);
+                                            matrix::warp_matrix<bs_type> B_bs(
+                                                                                                                 tile_k/mi->block_scaling.block_width,
+                                                                                                                 tile_n,
+                                                                                                                 Bbuf_fast.begin() + (tn * (k / tile_k) + tk) * tile_k * tile_n/mi->block_scaling.block_width,
+                                                                                                                 matrix::layout_optimal);
+                                            D += std::pair(A, A_bs) * std::pair(B, B_bs);
+                                        }
+                                        else
+                                        {
+                                            D += A * B;
+                                        }
                                     });
                                 });
                             }
                             else
                             {
                                 const bool use_bulk_copy = device.support_bulk_copy();
-                                mbarriers mbar(2, 2 + is_sparse);
+                                mbarriers mbar(2, 2 + is_sparse + 2*with_block_scaling);
                                 
                                 Tuint warps_m = exp2(log2(double(ls)/ws)/2);
                                 Tuint warps_n = (ls/ws)/warps_m;
@@ -685,6 +707,8 @@ public:
                                     array<local_mem<a_float_type>, 2> tmp_a;
                                     array<local_mem<b_float_type>, 2> tmp_b;
                                     array<local_mem<Tuint>, 2> tmp_sparse_md;
+                                    array<local_mem<bs_type>, 2> tmp_bs_a;
+                                    array<local_mem<bs_type>, 2> tmp_bs_b;
                                     for (unsigned int slot=0; slot< 2; ++slot)
                                     {
                                         tmp_a[slot].assign(tile_k*bigtile_m);
@@ -692,6 +716,11 @@ public:
                                         if constexpr(is_sparse)
                                         {
                                             tmp_sparse_md[slot].assign(warps_m * sparse_md_tile_size);
+                                        }
+                                        if constexpr(with_block_scaling)
+                                        {
+                                            tmp_bs_a[slot].assign(tile_k*bigtile_m / mi->block_scaling.block_width);
+                                            tmp_bs_b[slot].assign(tile_k*bigtile_n / mi->block_scaling.block_width);
                                         }
                                     }
                                     
@@ -716,6 +745,17 @@ public:
                                                           Bbuf_fast.begin() + (tk * (n/tile_n) + tm0) * tile_k * tile_n + tile_k*bigtile_n,
                                                           tmp_b[slot].begin(),
                                                           mbar(slot));
+                                                if constexpr(with_block_scaling)
+                                                {
+                                                    bulk_copy(A_bs_buf_fast.begin() + (tk * (m/tile_m) + tm0) * tile_k * tile_m/ mi->block_scaling.block_width,
+                                                              A_bs_buf_fast.begin() + (tk * (m/tile_m) + tm0) * tile_k * tile_m/ mi->block_scaling.block_width + tile_k*bigtile_m/ mi->block_scaling.block_width,
+                                                              tmp_bs_a[slot].begin(),
+                                                              mbar(slot));
+                                                    bulk_copy(B_bs_buf_fast.begin() + (tk * (n/tile_n) + tm0) * tile_k * tile_n/ mi->block_scaling.block_width,
+                                                              B_bs_buf_fast.begin() + (tk * (n/tile_n) + tm0) * tile_k * tile_n/ mi->block_scaling.block_width + tile_k*bigtile_n/ mi->block_scaling.block_width,
+                                                              tmp_bs_b[slot].begin(),
+                                                              mbar(slot));
+                                                }
                                             }
                                         }
                                         else
@@ -747,6 +787,23 @@ public:
                                                 async_copy(Bbuf_fast.begin() + (tk * (n/tile_n) + tn0) * tile_k * tile_n + i,
                                                            tmp_b[slot].begin() + i);
                                             });
+                                            if constexpr(with_block_scaling)
+                                            {
+                                                gpu_for_local(0,
+                                                              tile_k*bigtile_m/ mi->block_scaling.block_width,
+                                                              [&](gpu_uint i)
+                                                              {
+                                                    async_copy(A_bs_buf_fast.begin() + (tk * (m/tile_m) + tm0) * tile_k * tile_m/ mi->block_scaling.block_width + i,
+                                                               tmp_bs_a[slot].begin() + i);
+                                                });
+                                                gpu_for_local(0,
+                                                              tile_k*bigtile_n/ mi->block_scaling.block_width,
+                                                              [&](gpu_uint i)
+                                                              {
+                                                    async_copy(B_bs_buf_fast.begin() + (tk * (n/tile_n) + tn0) * tile_k * tile_n/ mi->block_scaling.block_width + i,
+                                                               tmp_bs_b[slot].begin() + i);
+                                                });
+                                            }
                                             
                                             async_commit();
                                         }
@@ -792,14 +849,29 @@ public:
                                             matrix::warp_matrix<typename make_cpu<a_float_type_nodebug>::type> A(
                                                                                                                  tile_m,
                                                                                                                  tile_k,
-                                                                                                                 tmp_a[slot].begin() + warp_id / warps_n * tile_m * tile_k,
+                                                                                                                 tmp_a[slot].begin() + warp_id / warps_n * tile_k * tile_m,
                                                                                                                  matrix::layout_optimal);
                                             matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                                                                                                                  tile_k,
                                                                                                                  tile_n,
                                                                                                                  tmp_b[slot].begin() + warp_id % warps_n * tile_k * tile_n,
                                                                                                                  matrix::layout_optimal);
-                                            D += A * B;
+                                            if constexpr(with_block_scaling)
+                                            {
+                                                matrix::warp_matrix<bs_type> A_bs(tile_m, tile_k/mi->block_scaling.block_width,
+                                                                             tmp_bs_a[slot].begin() + warp_id/warps_n * tile_k * tile_m/mi->block_scaling.block_width,
+                                                                                  matrix::layout_optimal);
+                                                matrix::warp_matrix<bs_type> B_bs(
+                                                                                                                     tile_k/mi->block_scaling.block_width,
+                                                                                                                     tile_n,
+                                                                                                                     tmp_bs_b[slot].begin() + warp_id%warps_n* tile_k * tile_n/mi->block_scaling.block_width,
+                                                                                                                     matrix::layout_optimal);
+                                                D += std::pair(A, A_bs) * std::pair(B, B_bs);
+                                            }
+                                            else
+                                            {
+                                                D += A * B;
+                                            }
                                         }
                                     });
                                     D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
