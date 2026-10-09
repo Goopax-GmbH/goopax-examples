@@ -31,7 +31,6 @@ PARAMOPT<unsigned int> K("k", 4096);
 // Use this workgroup size. If 0, a suitable value will be chosen.
 PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 32);
 
-
 PARAMOPT<unsigned int> TILE_M("tile_m", 32);
 PARAMOPT<unsigned int> TILE_N("tile_n", 32);
 PARAMOPT<unsigned int> TILE_K("tile_k", 32);
@@ -146,8 +145,9 @@ void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t des
     unsigned int offset = 0;
     for (unsigned int burst = 4; burst != 0; burst /= 2)
     {
-        while ((N - offset) % (burst * local_size()) != 0)
+        while ((N - offset) % (burst * local_size()) == 0 && N - offset >= burst * local_size())
         {
+            assert(N >= offset);
             for (unsigned int sub = 0; sub < burst; ++sub)
             {
                 async_copy(src + local_id() * burst + (offset + sub), dest + local_id() * burst + (offset + sub));
@@ -212,6 +212,7 @@ public:
     {
         assert(mi);
         return [rows, cols, tile_rows, tile_cols, use, mi, &Mbuf_fast, M_md, this](const resource<input_T>& Mbuf) {
+            assert(local_size() == mi->Nthreads);
             gpu_for_group(0, (rows / tile_rows) * (cols / tile_cols), [&](gpu_uint tile) {
                 gpu_uint tr;
                 gpu_uint tc;
@@ -399,8 +400,6 @@ public:
                         gpu_uint tm0 = btm * tile_m;
                         gpu_uint tn0 = btn * tile_n;
                         gpu_uint warp_id = (local_id() / mi->Nthreads);
-                        gpu_uint tm = tm0 + warp_id / warps_n;
-                        gpu_uint tn = tn0 + warp_id % warps_n;
 
                         matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(tile_m, tile_n);
                         D.set_info(mi);
@@ -574,7 +573,9 @@ public:
                                 }
                             }
                         });
-                        D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
+                        D.store(Dbuf.begin() + warp_id / warps_n * tile_m * n + warp_id % warps_n * tile_n,
+                                matrix::row_major,
+                                n);
                     });
                 }
             },
@@ -584,17 +585,17 @@ public:
         prepare_A.assign(
             device,
             prepare_func<false, a_input_type>(Abuf_fast, nullptr, m, k, tile_m, tile_k, matrix::matrix_a, mi),
-            ls,
+            ws,
             0);
         prepare_A_from_dense.assign(
             device,
             prepare_func<true, a_input_type>(Abuf_fast, &sparse_md, m, k, tile_m, tile_k, matrix::matrix_a, mi),
-            ls,
+            ws,
             0);
         prepare_B.assign(
             device,
             prepare_func<false, b_input_type>(Bbuf_fast, nullptr, k, n, tile_k, tile_n, matrix::matrix_b, mi),
-            ls,
+            ws,
             0);
         if constexpr (with_block_scaling)
         {
@@ -610,7 +611,7 @@ public:
                                                              tile_k / mi->block_scaling.block_width,
                                                              matrix::matrix_block_scaling_a,
                                                              mi),
-                                ls,
+                                ws,
                                 0);
             prepare_B_bs.assign(device,
                                 prepare_func<false, bs_type>(B_bs_buf_fast,
@@ -621,7 +622,7 @@ public:
                                                              tile_n,
                                                              matrix::matrix_block_scaling_b,
                                                              mi),
-                                ls,
+                                ws,
                                 0);
         }
     }
@@ -716,7 +717,7 @@ void run2(goopax_device device)
          << ", is_sparse=" << is_sparse << ", with_block_scaling=" << with_block_scaling << endl;
 
     Matmul<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, is_sparse, with_block_scaling> matmul(
-														       device, M, N, K, TILE_M, TILE_N, TILE_K, LOCAL_SIZE());
+        device, M, N, K, TILE_M, TILE_N, TILE_K, LOCAL_SIZE());
     if (!matmul.mi)
     {
         cout << "  Not supported." << endl;
