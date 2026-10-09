@@ -426,16 +426,13 @@ PARAMOPT<unsigned int> TILE_M("tile_m", 32);
 PARAMOPT<unsigned int> TILE_N("tile_n", 32);
 PARAMOPT<unsigned int> TILE_K("tile_k", 32);
 
-static std::unordered_map<detail::goopax_device_impl*, WELL512_data> rnd_cache;
-
-template<typename T>
-void fill_random(buffer<T>& a)
+template<typename func_t>
+auto static_kernel(goopax_device device, func_t code)
 {
-    using kernel_t = kernel<void(buffer<T> & a)>;
+    using kernel_t = decltype(kernel(device, code));
 
     static std::mutex Mutex;
     static std::unordered_map<detail::goopax_device_impl*, kernel_t> kernel_cache;
-    goopax_device device = a.get_device();
 
     kernel_t k;
     {
@@ -443,32 +440,7 @@ void fill_random(buffer<T>& a)
         auto p = kernel_cache.find(device.get_impl());
         if (p == kernel_cache.end())
         {
-            if (!rnd_cache.contains(device.get_impl()))
-            {
-                std::random_device rd;
-                rnd_cache[device.get_impl()].assign(device, device.default_global_size_max(), rd());
-                detail::release(device.get_impl());
-                device.at_device_cleanup(
-                    [](void* data) {
-                        detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
-                        detail::retain(device);
-                        std::lock_guard lock(Mutex);
-                        rnd_cache.erase(device);
-                    },
-                    device.get_impl());
-            }
-
-            p = kernel_cache
-                    .emplace(device.get_impl(),
-                             kernel_t(device,
-                                      [device](resource<T>& a) {
-                                          WELL512_lib rndlib(rnd_cache[device.get_impl()]);
-                                          for_each_global(a, [&](auto& x) {
-                                              x = static_cast<typename make_gpu<T>::type>(
-                                                  rndlib.gaussian_distribution());
-                                          });
-                                      }))
-                    .first;
+            p = kernel_cache.emplace(device.get_impl(), kernel_t(device, code)).first;
 
             detail::release(device.get_impl());
             device.at_device_cleanup(
@@ -482,7 +454,72 @@ void fill_random(buffer<T>& a)
         }
         k = p->second;
     }
-    k(a);
+    return k;
+}
+
+template<typename rnd_t>
+rnd_t& static_rnd(goopax_device device)
+{
+    static std::unordered_map<detail::goopax_device_impl*, rnd_t> rnd_cache;
+
+    static std::mutex Mutex;
+    std::lock_guard lock(Mutex);
+
+    auto r = rnd_cache.find(device.get_impl());
+    if (r == rnd_cache.end())
+    {
+        std::random_device rd;
+        r = rnd_cache.emplace(device.get_impl(), rnd_t(device, device.default_global_size_max(), rd())).first;
+        detail::release(device.get_impl());
+        device.at_device_cleanup(
+            [](void* data) {
+                detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
+                detail::retain(device);
+                std::lock_guard lock(Mutex);
+                rnd_cache.erase(device);
+            },
+            device.get_impl());
+    }
+    return r->second;
+}
+
+template<typename T>
+void fill_random(buffer<T>& a)
+{
+    goopax_device device = a.get_device();
+
+    static_kernel(device, [device](resource<T>& a) {
+        WELL512_lib rndlib(static_rnd<WELL512_data>(device));
+        for_each_global(a,
+                        [&](auto& x) { x = static_cast<typename make_gpu<T>::type>(rndlib.gaussian_distribution()); });
+    })(a);
+}
+
+template<typename T>
+void make_sparse(buffer<T>& a, const matrix::matrix_support_info::sparse_t& sparse)
+{
+    goopax_device device = a.get_device();
+
+    static_kernel(device, [&sparse](resource<T>& a) {
+        xoshiro128_lib rndlib(static_rnd<xoshiro128_data>(get_current_build_device()));
+        gpu_for_global(a.begin(), a.end(), sparse.blocksize, [&](auto p) {
+            gpu_uint bits = rndlib.next() & ((1 << sparse.blocksize / sparse.vector_width) - 1);
+            gpu_while(popcount(bits) != sparse.non_null_per_block / sparse.vector_width)
+            {
+                bits = rndlib.next() & ((1 << sparse.blocksize / sparse.vector_width) - 1);
+            }
+            for (unsigned int bit = 0; bit < sparse.blocksize / sparse.vector_width; ++bit)
+            {
+                gpu_if((bits & (1 << bit)) == 0)
+                {
+                    for (unsigned int sub = 0; sub < sparse.vector_width; ++sub)
+                    {
+                        p[bit * sparse.vector_width + sub] = 0;
+                    }
+                }
+            }
+        });
+    })(a);
 }
 
 template<typename src_ptr_t, typename dest_ptr_t>
@@ -538,6 +575,7 @@ public:
     goopax_device device;
 
     const matrix::matrix_support_info* mi = nullptr;
+    Tuint sparse_md_tile_size;
 
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
@@ -604,13 +642,10 @@ public:
                                 matrix::layout_optimal);
                         if (sparse_md.empty())
                         {
-                            sparse_md.assign(device,
-                                             (rows / tile_rows) * (cols / tile_cols) * M.sparse_metadata().size()
-                                                 * mi->Nthreads);
                         }
                         if (M_md)
                         {
-                            M.store_metadata(M_md->begin() + tile * M.sparse_metadata().size());
+                            M.store_metadata(M_md->begin() + tile * sparse_md_tile_size);
                         }
                     }
                 }
@@ -635,8 +670,6 @@ public:
            unsigned int tile_k,
            unsigned int ls)
         : device(device0)
-        , Abuf_fast(device, m * k)
-        , Bbuf_fast(device, k * n)
     {
         if (m % tile_m != 0 || n % tile_n != 0 || k % tile_k != 0)
         {
@@ -660,63 +693,25 @@ public:
         }
         if (mi == nullptr)
         {
-            throw std::runtime_error("Cannot find suitable mi");
+            return;
         }
         cout << "using mi=" << *mi << endl;
-
-        prepare_A.assign(
-            device,
-            prepare_func<false, a_input_type>(Abuf_fast, nullptr, m, k, tile_m, tile_k, matrix::matrix_a, mi),
-            ls,
-            0);
-        prepare_A_from_dense.assign(
-            device,
-            prepare_func<true, a_input_type>(Abuf_fast, &sparse_md, m, k, tile_m, tile_k, matrix::matrix_a, mi),
-            ls,
-            0);
-        prepare_B.assign(
-            device,
-            prepare_func<false, b_input_type>(Bbuf_fast, nullptr, k, n, tile_k, tile_n, matrix::matrix_b, mi),
-            ls,
-            0);
-        if constexpr (with_block_scaling)
-        {
-            A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
-            B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
-
-            prepare_A_bs.assign(device,
-                                prepare_func<false, bs_type>(A_bs_buf_fast,
-                                                             nullptr,
-                                                             m,
-                                                             k / mi->block_scaling.block_width,
-                                                             tile_m,
-                                                             tile_k / mi->block_scaling.block_width,
-                                                             matrix::matrix_block_scaling_a,
-                                                             mi),
-                                ls,
-                                0);
-            prepare_B_bs.assign(device,
-                                prepare_func<false, bs_type>(B_bs_buf_fast,
-                                                             nullptr,
-                                                             k / mi->block_scaling.block_width,
-                                                             n,
-                                                             tile_k / mi->block_scaling.block_width,
-                                                             tile_n,
-                                                             matrix::matrix_block_scaling_b,
-                                                             mi),
-                                ls,
-                                0);
-        }
+        Abuf_fast.assign(device, m * k / mi->sparsity(matrix::matrix_a));
+        Bbuf_fast.assign(device, k * n);
 
         multiply.assign(
             device,
             [&](resource<c_float_type>& Dbuf) {
-                Tuint sparse_md_tile_size;
                 if constexpr (is_sparse)
                 {
                     matrix_a_t A(tile_m, tile_k);
                     A.set_info(mi);
                     sparse_md_tile_size = A.sparse_metadata().size() * mi->Nthreads;
+
+                    if (sparse_md.empty())
+                    {
+                        sparse_md.assign(device, (m / tile_m) * (k / tile_k) * sparse_md_tile_size);
+                    }
                 }
 
                 if (ls == ws)
@@ -731,7 +726,8 @@ public:
                         gpu_for(0, (k / tile_k), [&](gpu_uint tk) {
                             matrix_a_t A(tile_m, tile_k);
                             A.set_info(mi);
-                            A.load(Abuf_fast.begin() + (tk * (m / tile_m) + tm) * tile_m * tile_k,
+                            A.load(Abuf_fast.begin()
+                                       + (tk * (m / tile_m) + tm) * tile_m * tile_k / mi->sparsity(matrix::matrix_a),
                                    matrix::layout_optimal);
                             if constexpr (is_sparse)
                             {
@@ -763,17 +759,15 @@ public:
                             {
                                 D += A * B;
 
-                                /*
-                                if constexpr(!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
-                                  {
-                                    gpu_cout << "thread " << global_id()
-                                         << ". tk=" << tk
-                                         << ":\n  A=" << A.coeffs()
-                                         << "\n  B=" << B.coeffs()
-                                         << "\n  D=" << D.coeffs()
-                                         << "\n";
-                                  }
-                                */
+                                /* if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
+                                {
+                                    gpu_cout << "thread " << global_id() << ". tk=" << tk << ":\n  A=" << A.coeffs();
+                                    if constexpr (is_sparse)
+                                    {
+                                        gpu_cout << "\n  md=" << hex << A.sparse_metadata() << dec;
+                                    }
+                                    gpu_cout << "\n  B=" << B.coeffs() << "\n  D=" << D.coeffs() << "\n";
+                                }*/
                             }
                         });
                         D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
@@ -976,6 +970,50 @@ public:
             },
             ls,
             0);
+
+        prepare_A.assign(
+            device,
+            prepare_func<false, a_input_type>(Abuf_fast, nullptr, m, k, tile_m, tile_k, matrix::matrix_a, mi),
+            ls,
+            0);
+        prepare_A_from_dense.assign(
+            device,
+            prepare_func<true, a_input_type>(Abuf_fast, &sparse_md, m, k, tile_m, tile_k, matrix::matrix_a, mi),
+            ls,
+            0);
+        prepare_B.assign(
+            device,
+            prepare_func<false, b_input_type>(Bbuf_fast, nullptr, k, n, tile_k, tile_n, matrix::matrix_b, mi),
+            ls,
+            0);
+        if constexpr (with_block_scaling)
+        {
+            A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
+            B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
+
+            prepare_A_bs.assign(device,
+                                prepare_func<false, bs_type>(A_bs_buf_fast,
+                                                             nullptr,
+                                                             m,
+                                                             k / mi->block_scaling.block_width,
+                                                             tile_m,
+                                                             tile_k / mi->block_scaling.block_width,
+                                                             matrix::matrix_block_scaling_a,
+                                                             mi),
+                                ls,
+                                0);
+            prepare_B_bs.assign(device,
+                                prepare_func<false, bs_type>(B_bs_buf_fast,
+                                                             nullptr,
+                                                             k / mi->block_scaling.block_width,
+                                                             n,
+                                                             tile_k / mi->block_scaling.block_width,
+                                                             tile_n,
+                                                             matrix::matrix_block_scaling_b,
+                                                             mi),
+                                ls,
+                                0);
+        }
     }
 };
 
@@ -1069,6 +1107,11 @@ void run2(goopax_device device)
 
     Matmul<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, is_sparse, with_block_scaling> matmul(
         device, M, N, K, TILE_M, TILE_N, TILE_K, 32);
+    if (!matmul.mi)
+    {
+        cout << "  Not supported." << endl;
+        return;
+    }
 
     buffer<a_input_type> A(device, M * K);
     buffer<b_input_type> B(device, K * N);
@@ -1084,6 +1127,7 @@ void run2(goopax_device device)
 
     if (is_sparse)
     {
+        make_sparse(A, matmul.mi->sparse_a);
         matmul.prepare_A_from_dense(A);
     }
     else
