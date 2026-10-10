@@ -21,7 +21,7 @@
 #include <goopax_extra/struct_types.hpp>
 #include <random>
 #include <set>
-#include <stack>
+#include <queue>
 
 #define MULTIPOLE_ORDER 4
 #define HAVE_BFLOAT16 1
@@ -1386,7 +1386,7 @@ struct Cosmos : public CosmosData<T>
         , scratch(reinterpret<buffer<Tuint>>(matter_tree))
         , nmr_scan(host_allocator<Node_memory_request<>>(device))
     {
-        std::stack<future<void>> futures;
+        std::queue<future<void>> futures;
         const std::launch policy = (PARALLEL_KERNEL_CREATION ? std::launch::async : std::launch::deferred);
 
         {
@@ -2418,7 +2418,7 @@ struct Cosmos : public CosmosData<T>
 
         while (!futures.empty())
         {
-            futures.top().get();
+            futures.front().get();
             futures.pop();
         }
     }
