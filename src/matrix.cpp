@@ -29,11 +29,11 @@ PARAMOPT<unsigned int> N("n", 4096);
 PARAMOPT<unsigned int> K("k", 4096);
 
 // Use this workgroup size. If 0, a suitable value will be chosen.
-PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 32);
+PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 0);
 
-PARAMOPT<unsigned int> TILE_M("tile_m", 32);
-PARAMOPT<unsigned int> TILE_N("tile_n", 32);
-PARAMOPT<unsigned int> TILE_K("tile_k", 32);
+PARAMOPT<unsigned int> TILE_M("tile_m", 0);
+PARAMOPT<unsigned int> TILE_N("tile_n", 0);
+PARAMOPT<unsigned int> TILE_K("tile_k", 0);
 
 template<typename func_t>
 auto static_kernel(goopax_device device, func_t code)
@@ -186,6 +186,10 @@ public:
 
     const matrix::matrix_support_info* mi = nullptr;
     Tuint sparse_md_tile_size;
+    Tuint tile_m;
+    Tuint tile_n;
+    Tuint tile_k;
+    Tuint ls;
 
     buffer<a_float_type> Abuf_fast;
     buffer<b_float_type> Bbuf_fast;
@@ -273,12 +277,58 @@ public:
            unsigned int m,
            unsigned int n,
            unsigned int k,
-           unsigned int tile_m,
-           unsigned int tile_n,
-           unsigned int tile_k,
-           unsigned int ls)
+           unsigned int force_tile_m,
+           unsigned int force_tile_n,
+           unsigned int force_tile_k,
+           unsigned int force_ls)
         : device(device0)
     {
+        tile_m = 64;
+        tile_n = 128;
+        tile_k = 16;
+        ls = 256;
+
+        if (bitsize<c_float_type>::value >= 32)
+        {
+            tile_m = 32;
+            tile_n = 64;
+        }
+        if (bitsize<a_float_type>::value <= 8)
+        {
+            tile_k = 32;
+        }
+        if (std::is_same_v<a_float_type, precision::fp4e2m1>)
+        {
+            tile_k = 64;
+        }
+        if (std::is_same_v<a_float_type, double>)
+        {
+            tile_m = 8;
+            tile_n = 16;
+        }
+        if (is_sparse)
+        {
+            if (bitsize<c_float_type>::value == 16 && bitsize<a_float_type>::value == 16)
+            {
+            }
+            else if (bitsize<a_float_type>::value == 32)
+            {
+            }
+            else
+            {
+                tile_k *= 2;
+            }
+        }
+
+        if (force_tile_m)
+            tile_m = force_tile_m;
+        if (force_tile_n)
+            tile_n = force_tile_n;
+        if (force_tile_k)
+            tile_k = force_tile_k;
+        if (force_ls)
+            ls = force_ls;
+
         if (m % tile_m != 0 || n % tile_n != 0 || k % tile_k != 0)
         {
             throw std::runtime_error("big matrix sizes must be multiples of tile sizes");
@@ -303,7 +353,7 @@ public:
         {
             return;
         }
-        cout << "using mi=" << *mi << endl;
+        // cout << "using mi=" << *mi << endl;
         Abuf_fast.assign(device, m * k / mi->sparsity(matrix::matrix_a));
         Bbuf_fast.assign(device, k * n);
 
@@ -687,16 +737,17 @@ template<typename a_float_type,
          bool with_block_scaling>
 void run2(goopax_device device)
 {
-    cout << "run2. MNK=" << M << "," << N << "," << K << ", tile=" << TILE_M << "," << TILE_N << "," << TILE_K
-         << ", is_sparse=" << is_sparse << ", with_block_scaling=" << with_block_scaling << endl;
-
     Matmul<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, is_sparse, with_block_scaling> matmul(
         device, M, N, K, TILE_M, TILE_N, TILE_K, LOCAL_SIZE());
     if (!matmul.mi)
     {
-        cout << "  Not supported." << endl;
+        // cout << "  Not supported." << endl;
         return;
     }
+    cout << "T_A=" << type_name(type_enum<a_float_type>::value) << ", T_B=" << type_name(type_enum<b_float_type>::value)
+         << ", T_C=" << type_name(type_enum<c_float_type>::value) << ", mnk=" << M << "," << N << "," << K
+         << ", tile_m=" << matmul.tile_m << ", tile_n=" << matmul.tile_n << ", tile_k=" << matmul.tile_k
+         << ", ls=" << matmul.ls << flush;
 
     buffer<a_input_type> A(device, M * K);
     buffer<b_input_type> B(device, K * N);
@@ -741,9 +792,9 @@ void run2(goopax_device device)
     auto t2 = steady_clock::now();
 
     double OPS = double(M) * N * K * 2 / duration_cast<duration<double>>(t2 - t1).count();
-    cout << "preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0)
+    cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0)
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
-         << " TOPS" << endl;
+         << " TOPS" << flush;
 
     if (VERB)
     {
@@ -761,7 +812,8 @@ void run2(goopax_device device)
 
     // if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
     {
-        cout << "verifying..." << flush;
+        cout << (is_sparse ? " (sparse)" : "") << (with_block_scaling ? " (block scaling)" : "") << " verifying..."
+             << flush;
         Tdouble err =
             verify<a_input_type, b_input_type, c_float_type, Tdebugtype<precision::fp8ue8m0>>(const_buffer_map(A),
                                                                                               const_buffer_map(B),
@@ -783,9 +835,6 @@ template<typename a_float_type,
          typename b_input_type>
 void run_with_types(goopax_device device)
 {
-    cout << "\nUsing types T_A=" << type_name(type_enum<a_float_type>::value)
-         << ", T_B=" << type_name(type_enum<b_float_type>::value)
-         << " and T_C=" << type_name(type_enum<c_float_type>::value) << endl;
     if constexpr (bitsize<a_float_type>::value >= 8)
     {
         run2<a_float_type, b_float_type, c_float_type, a_input_type, b_input_type, false, false>(device);
@@ -808,7 +857,7 @@ void run_with_types(goopax_device device)
         run<a_float_type, b_float_type, c_float_type, true>(device, true);
     }
     */
-    cout << endl;
+    // cout << endl;
 }
 
 int main(int argc, char** argv)
