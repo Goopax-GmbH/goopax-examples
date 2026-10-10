@@ -35,6 +35,9 @@ PARAMOPT<unsigned int> TILE_M("tile_m", 0);
 PARAMOPT<unsigned int> TILE_N("tile_n", 0);
 PARAMOPT<unsigned int> TILE_K("tile_k", 0);
 
+PARAMOPT<bool> USE_BULK_COPY("use_bulk_copy", true);
+PARAMOPT<bool> USE_ASYNC_COPY("use_async_copy", true);
+
 template<typename func_t>
 auto static_kernel(goopax_device device, func_t code)
 {
@@ -132,7 +135,7 @@ void make_sparse(buffer<T>& a, const matrix::matrix_support_info::sparse_t& spar
 }
 
 template<typename src_ptr_t, typename dest_ptr_t>
-void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t dest_orig)
+void parallel_copy(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t dest_orig, bool use_async)
 {
     using value_t = typename goopax_remove_pointer<typename make_cpu<dest_ptr_t>::type>::type;
     using uint_type = typename change_gpu_mode<uint32_t, value_t>::type;
@@ -150,7 +153,14 @@ void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t des
             assert(N >= offset);
             for (unsigned int sub = 0; sub < burst; ++sub)
             {
-                async_copy(src + local_id() * burst + (offset + sub), dest + local_id() * burst + (offset + sub));
+                if (use_async)
+                {
+                    async_copy(src + local_id() * burst + (offset + sub), dest + local_id() * burst + (offset + sub));
+                }
+                else
+                {
+                    dest[local_id() * burst + (offset + sub)] = src[local_id() * burst + (offset + sub)];
+                }
             }
             offset += burst * local_size();
         }
@@ -159,7 +169,14 @@ void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t des
     {
         gpu_if(local_id() < N - offset)
         {
-            async_copy(src + local_id() + offset, dest + local_id() + offset);
+            if (use_async)
+            {
+                async_copy(src + local_id() + offset, dest + local_id() + offset);
+            }
+            else
+            {
+                dest[local_id() + offset] = src[local_id() + offset];
+            }
         }
     }
 }
@@ -423,7 +440,8 @@ public:
                 }
                 else
                 {
-                    const bool use_bulk_copy = device.support_bulk_copy();
+                    const bool use_bulk_copy = device.support_bulk_copy() && USE_BULK_COPY;
+                    const bool use_async_copy = device.support_async_copy() && USE_ASYNC_COPY;
                     optional<mbarriers> mbar;
                     if (use_bulk_copy)
                     {
@@ -437,6 +455,7 @@ public:
                     assert(m % bigtile_m == 0);
                     assert(n % bigtile_n == 0);
                     assert(k % tile_k == 0);
+                    const unsigned int num_slots = (use_bulk_copy || use_async_copy) ? 2 : 1;
 
                     gpu_for_group(0, (m / bigtile_m) * (n / bigtile_n), [&](gpu_uint bigtile) {
                         gpu_uint btm = bigtile / (n / bigtile_n);
@@ -454,7 +473,7 @@ public:
                         array<local_mem<Tuint>, 2> tmp_sparse_md;
                         array<local_mem<bs_type>, 2> tmp_bs_a;
                         array<local_mem<bs_type>, 2> tmp_bs_b;
-                        for (unsigned int slot = 0; slot < 2; ++slot)
+                        for (unsigned int slot = 0; slot < num_slots; ++slot)
                         {
                             tmp_a[slot].assign(tile_k * bigtile_m / mi->sparsity(matrix::matrix_a));
                             tmp_b[slot].assign(tile_k * bigtile_n);
@@ -480,7 +499,7 @@ public:
                                 }
                                 else
                                 {
-                                    parallel_copy_async(src, N, dest);
+                                    parallel_copy(src, N, dest, use_async_copy);
                                 }
                             };
                             copy_mem(Abuf_fast.begin()
@@ -512,17 +531,19 @@ public:
                             }
                             if (!use_bulk_copy)
                             {
-
                                 async_commit();
                             }
                         };
 
-                        // Trigger copying of the first tile.
-                        fetch(0, 0);
+                        if (use_bulk_copy || use_async_copy)
+                        {
+                            // Trigger copying of the first tile.
+                            fetch(0, 0);
+                        }
 
-                        assert((k / tile_k) % 2 == 0);
-                        gpu_for(0, (k / tile_k), 2, [&](gpu_uint tk) {
-                            for (unsigned int slot = 0; slot < 2; ++slot)
+                        assert((k / tile_k) % num_slots == 0);
+                        gpu_for(0, (k / tile_k), num_slots, [&](gpu_uint tk) {
+                            for (unsigned int slot = 0; slot < num_slots; ++slot)
                             {
                                 if (use_bulk_copy)
                                 {
@@ -536,7 +557,7 @@ public:
                                     // mbarrier objects, with 2 parity states each.
                                     (*mbar)(slot).wait(tk / 2);
                                 }
-                                else
+                                else if (use_async_copy)
                                 {
                                     gpu_if(tk + slot != (k / tile_k) - 1)
                                     {
@@ -551,6 +572,11 @@ public:
                                         // This is the last tile. Need to wait for the data transfer to finish.
                                         async_wait(0);
                                     }
+                                    local_barrier(memory::threadgroup);
+                                }
+                                else
+                                {
+                                    fetch(0, tk);
                                     local_barrier(memory::threadgroup);
                                 }
 
