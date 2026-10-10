@@ -1,4 +1,6 @@
-#define WITH_TIMINGS 0
+#pragma once
+
+#define WITH_TIMINGS 1
 #define PERFORMANCE_RUN 0
 
 #if WITH_OPENCV
@@ -55,6 +57,7 @@ const float top_halflen = 4;
 PARAMOPT<Tuint> MAX_DEPTH("max_depth", 64);
 
 PARAMOPT<Tfloat> SMOOTHING("smoothing", 1E-5f);
+PARAMOPT<bool> PARALLEL_KERNEL_CREATION("parallel_kernel_creation", true);
 
 template<class T>
 Vector<T, 3> rot(const Vector<T, 3>& a, Tint step = 1)
@@ -1384,8 +1387,7 @@ struct Cosmos : public CosmosData<T>
         , nmr_scan(host_allocator<Node_memory_request<>>(device))
     {
         std::stack<future<void>> futures;
-        // constexpr std::launch policy = std::launch::deferred;
-        constexpr std::launch policy = std::launch::async;
+	const std::launch policy = (PARALLEL_KERNEL_CREATION ? std::launch::async : std::launch::deferred);
 
         {
             size_t force_tree_size = 1;
