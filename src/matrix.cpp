@@ -581,7 +581,7 @@ public:
                                 }
                             }
                         });
-                        D.store(Dbuf.begin() + warp_id / warps_n * tile_m * n + warp_id % warps_n * tile_n,
+                        D.store(Dbuf.begin() + warp_id / warps_n * tile_m * n + warp_id % warps_n * tile_n + btm*bigtile_m*n + btn*bigtile_n,
                                 matrix::row_major,
                                 n);
                     });
