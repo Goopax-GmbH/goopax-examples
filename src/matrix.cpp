@@ -369,16 +369,6 @@ public:
                             else
                             {
                                 D += A * B;
-
-                                /* if constexpr (!is_same_v<typename remove_debug<a_float_type>::type, precision::tf32>)
-                                {
-                                    gpu_cout << "thread " << global_id() << ". tk=" << tk << ":\n  A=" << A.coeffs();
-                                    if constexpr (is_sparse)
-                                    {
-                                        gpu_cout << "\n  md=" << hex << A.sparse_metadata() << dec;
-                                    }
-                                    gpu_cout << "\n  B=" << B.coeffs() << "\n  D=" << D.coeffs() << "\n";
-                                }*/
                             }
                         });
                         D.store(Dbuf.begin() + tm * tile_m * n + tn * tile_n, matrix::row_major, n);
@@ -433,80 +423,47 @@ public:
                         }
 
                         auto fetch = [&](int slot, gpu_uint tk) {
-                            if (use_bulk_copy)
-                            {
-                                gpu_if(local_id() == 0)
+                            auto copy_mem = [&](auto src, unsigned int N, auto dest) {
+                                if (use_bulk_copy)
                                 {
-                                    bulk_copy(Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m,
-                                              Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m
-                                                  + tile_k * bigtile_m,
-                                              tmp_a[slot].begin(),
-                                              (*mbar)(slot));
-                                    if constexpr (is_sparse)
+                                    gpu_if(local_id() == 0)
                                     {
-                                        bulk_copy(sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size,
-                                                  sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size
-                                                      + sparse_md_tile_size * warps_m,
-                                                  tmp_sparse_md[slot].begin(),
-                                                  (*mbar)(slot));
-                                    }
-                                    bulk_copy(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
-                                              Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n
-                                                  + tile_k * bigtile_n,
-                                              tmp_b[slot].begin(),
-                                              (*mbar)(slot));
-                                    if constexpr (with_block_scaling)
-                                    {
-                                        bulk_copy(A_bs_buf_fast.begin()
-                                                      + (tk * (m / tile_m) + tm0) * tile_k * tile_m
-                                                            / mi->block_scaling.block_width,
-                                                  A_bs_buf_fast.begin()
-                                                      + (tk * (m / tile_m) + tm0) * tile_k * tile_m
-                                                            / mi->block_scaling.block_width
-                                                      + tile_k * bigtile_m / mi->block_scaling.block_width,
-                                                  tmp_bs_a[slot].begin(),
-                                                  (*mbar)(slot));
-                                        bulk_copy(B_bs_buf_fast.begin()
-                                                      + (tk * (n / tile_n) + tm0) * tile_k * tile_n
-                                                            / mi->block_scaling.block_width,
-                                                  B_bs_buf_fast.begin()
-                                                      + (tk * (n / tile_n) + tm0) * tile_k * tile_n
-                                                            / mi->block_scaling.block_width
-                                                      + tile_k * bigtile_n / mi->block_scaling.block_width,
-                                                  tmp_bs_b[slot].begin(),
-                                                  (*mbar)(slot));
+                                        bulk_copy(src, src + N, dest, (*mbar)(slot));
                                     }
                                 }
+                                else
+                                {
+                                    parallel_copy_async(src, N, dest);
+                                }
+                            };
+                            copy_mem(Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m,
+                                     tile_k * bigtile_m,
+                                     tmp_a[slot].begin());
+                            if constexpr (is_sparse)
+                            {
+                                copy_mem(sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size,
+                                         sparse_md_tile_size * warps_m,
+                                         tmp_sparse_md[slot].begin());
                             }
-                            else
-                            {
-                                parallel_copy_async(Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m,
-                                                    tile_k * bigtile_m,
-                                                    tmp_a[slot].begin());
-                                if constexpr (is_sparse)
-                                {
-                                    parallel_copy_async(sparse_md.begin()
-                                                            + (tk * (m / tile_m) + tm0) * sparse_md_tile_size,
-                                                        sparse_md_tile_size * warps_m,
-                                                        tmp_sparse_md[slot].begin());
-                                }
-                                parallel_copy_async(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
-                                                    tile_k * bigtile_n,
-                                                    tmp_b[slot].begin());
+                            copy_mem(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
+                                     tile_k * bigtile_n,
+                                     tmp_b[slot].begin());
 
-                                if constexpr (with_block_scaling)
-                                {
-                                    parallel_copy_async(A_bs_buf_fast.begin()
-                                                            + (tk * (m / tile_m) + tm0) * tile_k * tile_m
-                                                                  / mi->block_scaling.block_width,
-                                                        tile_k * bigtile_m / mi->block_scaling.block_width,
-                                                        tmp_bs_a[slot].begin());
-                                    parallel_copy_async(B_bs_buf_fast.begin()
-                                                            + (tk * (n / tile_n) + tn0) * tile_k * tile_n
-                                                                  / mi->block_scaling.block_width,
-                                                        tile_k * bigtile_n / mi->block_scaling.block_width,
-                                                        tmp_bs_b[slot].begin());
-                                }
+                            if constexpr (with_block_scaling)
+                            {
+                                copy_mem(A_bs_buf_fast.begin()
+                                             + (tk * (m / tile_m) + tm0) * tile_k * tile_m
+                                                   / mi->block_scaling.block_width,
+                                         tile_k * bigtile_m / mi->block_scaling.block_width,
+                                         tmp_bs_a[slot].begin());
+                                copy_mem(B_bs_buf_fast.begin()
+                                             + (tk * (n / tile_n) + tn0) * tile_k * tile_n
+                                                   / mi->block_scaling.block_width,
+                                         tile_k * bigtile_n / mi->block_scaling.block_width,
+                                         tmp_bs_b[slot].begin());
+                            }
+                            if (!use_bulk_copy)
+                            {
 
                                 async_commit();
                             }
@@ -549,11 +506,17 @@ public:
                                     local_barrier(memory::threadgroup);
                                 }
 
-                                matrix::warp_matrix<typename make_cpu<a_float_type_nodebug>::type> A(
-                                    tile_m,
-                                    tile_k,
-                                    tmp_a[slot].begin() + warp_id / warps_n * tile_k * tile_m,
-                                    matrix::layout_optimal);
+                                matrix_a_t A(tile_m, tile_k);
+                                A.set_info(mi);
+                                A.load(tmp_a[slot].begin() + warp_id / warps_n * tile_k * tile_m,
+                                       matrix::layout_optimal);
+
+                                if constexpr (is_sparse)
+                                {
+                                    A.load_metadata(tmp_sparse_md[slot].begin()
+                                                    + warp_id / warps_n * sparse_md_tile_size);
+                                }
+
                                 matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                                     tile_k,
                                     tile_n,
