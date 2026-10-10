@@ -155,9 +155,9 @@ void parallel_copy_async(src_ptr_t src_orig, unsigned int N_orig, dest_ptr_t des
             offset += burst * local_size();
         }
     }
-    if (offset != 0)
+    if (N - offset != 0)
     {
-        gpu_if(local_id() < offset)
+        gpu_if(local_id() < N - offset)
         {
             async_copy(src + local_id() + offset, dest + local_id() + offset);
         }
@@ -387,12 +387,19 @@ public:
                 else
                 {
                     const bool use_bulk_copy = device.support_bulk_copy();
-                    mbarriers mbar(2, 2 + is_sparse + 2 * with_block_scaling);
+                    optional<mbarriers> mbar;
+                    if (use_bulk_copy)
+                    {
+                        mbar.emplace(2, 2 + is_sparse + 2 * with_block_scaling);
+                    }
 
                     Tuint warps_m = exp2(log2(double(ls) / ws) / 2);
                     Tuint warps_n = (ls / ws) / warps_m;
                     Tuint bigtile_m = tile_m * warps_m;
                     Tuint bigtile_n = tile_n * warps_n;
+                    assert(m % bigtile_m == 0);
+                    assert(n % bigtile_n == 0);
+                    assert(k % tile_k == 0);
 
                     gpu_for_group(0, (m / bigtile_m) * (n / bigtile_n), [&](gpu_uint bigtile) {
                         gpu_uint btm = bigtile / (n / bigtile_n);
@@ -434,20 +441,20 @@ public:
                                               Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m
                                                   + tile_k * bigtile_m,
                                               tmp_a[slot].begin(),
-                                              mbar(slot));
+                                              (*mbar)(slot));
                                     if constexpr (is_sparse)
                                     {
                                         bulk_copy(sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size,
                                                   sparse_md.begin() + (tk * (m / tile_m) + tm0) * sparse_md_tile_size
                                                       + sparse_md_tile_size * warps_m,
                                                   tmp_sparse_md[slot].begin(),
-                                                  mbar(slot));
+                                                  (*mbar)(slot));
                                     }
                                     bulk_copy(Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n,
                                               Bbuf_fast.begin() + (tk * (n / tile_n) + tn0) * tile_k * tile_n
                                                   + tile_k * bigtile_n,
                                               tmp_b[slot].begin(),
-                                              mbar(slot));
+                                              (*mbar)(slot));
                                     if constexpr (with_block_scaling)
                                     {
                                         bulk_copy(A_bs_buf_fast.begin()
@@ -458,7 +465,7 @@ public:
                                                             / mi->block_scaling.block_width
                                                       + tile_k * bigtile_m / mi->block_scaling.block_width,
                                                   tmp_bs_a[slot].begin(),
-                                                  mbar(slot));
+                                                  (*mbar)(slot));
                                         bulk_copy(B_bs_buf_fast.begin()
                                                       + (tk * (n / tile_n) + tm0) * tile_k * tile_n
                                                             / mi->block_scaling.block_width,
@@ -467,7 +474,7 @@ public:
                                                             / mi->block_scaling.block_width
                                                       + tile_k * bigtile_n / mi->block_scaling.block_width,
                                                   tmp_bs_b[slot].begin(),
-                                                  mbar(slot));
+                                                  (*mbar)(slot));
                                     }
                                 }
                             }
@@ -521,7 +528,7 @@ public:
                                     // And wait for the previous copy operation to finish.
                                     // bulk copy uses mbarrier synchronization mechanism. Alternating between two
                                     // mbarrier objects, with 2 parity states each.
-                                    mbar(slot).wait(tk / 2);
+                                    (*mbar)(slot).wait(tk / 2);
                                 }
                                 else
                                 {
