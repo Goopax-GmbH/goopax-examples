@@ -599,7 +599,7 @@ int main(int argc, char** argv)
         if (device.max_registers() < 220)
         {
             cout << "cosmology is optimised for GPUs with 256 registers per thread. It will perform poorly on other "
-                    "devices. If you think you know what you are doign, remove this exit(1) call and proceed at your "
+                    "devices. If you think you know what you are doing, remove this exit(1) call and proceed at your "
                     "own risk."
                  << endl;
             exit(1);
@@ -920,7 +920,9 @@ int main(int argc, char** argv)
 #if PERFORMANCE_RUN
                     auto simu_stop = steady_clock::now();
                     cout << "PERFORMANCE: " << step - 1 << " steps in "
-                         << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << endl;
+                         << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << " -> "
+                         << duration_cast<std::chrono::microseconds>((simu_stop - simu_start) / (step - 1))
+                         << " per step" << endl;
                     cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE()
                          << ", min_tree_depth=" << min_tree_depth << endl;
                     return 0;

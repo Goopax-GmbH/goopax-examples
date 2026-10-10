@@ -124,19 +124,19 @@ struct multipole_index
 	{
 	  array<Tint, K> q;
 	  array<Tint, order - K> w;
-	  Tuint e_hash = 0;
 	  auto pq = q.begin();
 	  auto pw = w.begin();
 	  for (unsigned int k = 0; k < order; ++k)
 	    {
-	      e_hash += (1u << 8 * i[k]);
 	      if (p[k])
 		*pw++ = i[k];
 	      else
 		*pq++ = i[k];
 	    }
 	  {
+#ifndef NDEBUG
 	    unsigned int check = 0;
+#endif
 	    for (auto& qq : multipole_index<K>::indices)
 	      {
 		for (auto& ww : multipole_index<order-K>::indices)
@@ -148,7 +148,9 @@ struct multipole_index
 			    cache[qq.pos] = {0.0, func(qq, ww)};
 			  }
 			++cache[qq.pos].first;
+#ifndef NDEBUG
 			++check;
+#endif
 		      }
 		  }
 	      }
