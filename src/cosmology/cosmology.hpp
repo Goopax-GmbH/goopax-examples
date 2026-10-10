@@ -14,6 +14,7 @@
 #include "../common/output.hpp"
 #include <fstream>
 #include <goopax_draw/window_sdl.h>
+#include <goopax_extra/alloc.hpp>
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/struct_types.hpp>
 #include <random>
@@ -616,6 +617,7 @@ struct Cosmos : public CosmosData<T>
         return ret;
     }
 
+    vector<Node_memory_request<>, host_allocator<Node_memory_request<>>> nmr_scan;
     buffer<Node_memory_request<>> node_offsets;
 
     kernel<void(pair<Tuint, Tuint> treerange)> save_old_tree_data;
@@ -827,8 +829,6 @@ struct Cosmos : public CosmosData<T>
             treecount4_first_depth(
                 { treeranges[min_tree_depth - 1].first, partnode_withchild_ranges[min_tree_depth - 1].second },
                 treeranges[min_tree_depth - 1].second);
-
-            vector<Node_memory_request<>> nmr_scan(this->treecount2.num_groups());
 
             for (Tuint depth = min_tree_depth; depth < MAX_DEPTH(); ++depth)
             {
@@ -1381,6 +1381,7 @@ struct Cosmos : public CosmosData<T>
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , matter_tree(device, this->max_treesize)
         , scratch(reinterpret<buffer<Tuint>>(matter_tree))
+        , nmr_scan(host_allocator<Node_memory_request<>>(device))
     {
         std::stack<future<void>> futures;
         // constexpr std::launch policy = std::launch::deferred;
@@ -1544,6 +1545,7 @@ struct Cosmos : public CosmosData<T>
                 return gather_add(nmr);
             });
 
+            this->nmr_scan.resize(treecount2.num_groups());
             this->node_offsets.assign(device, treecount2.num_groups());
 
             treecount3.assign(
