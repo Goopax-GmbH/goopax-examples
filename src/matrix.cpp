@@ -251,9 +251,6 @@ public:
                         }
                         M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols / mi->sparsity(use),
                                 matrix::layout_optimal);
-                        if (sparse_md.empty())
-                        {
-                        }
                         if (M_md)
                         {
                             M.store_metadata(M_md->begin() + tile * sparse_md_tile_size);
@@ -342,7 +339,7 @@ public:
                                    matrix::layout_optimal);
                             if constexpr (is_sparse)
                             {
-                                A.load_metadata(sparse_md.begin() + (tm * (k / tile_k) + tk) * sparse_md_tile_size);
+                                A.load_metadata(sparse_md.begin() + (tk * (m / tile_m) + tm) * sparse_md_tile_size);
                             }
                             matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
                                 tile_k,
@@ -409,7 +406,7 @@ public:
                         array<local_mem<bs_type>, 2> tmp_bs_b;
                         for (unsigned int slot = 0; slot < 2; ++slot)
                         {
-                            tmp_a[slot].assign(tile_k * bigtile_m);
+                            tmp_a[slot].assign(tile_k * bigtile_m / mi->sparsity(matrix::matrix_a));
                             tmp_b[slot].assign(tile_k * bigtile_n);
                             if constexpr (is_sparse)
                             {
@@ -436,8 +433,9 @@ public:
                                     parallel_copy_async(src, N, dest);
                                 }
                             };
-                            copy_mem(Abuf_fast.begin() + (tk * (m / tile_m) + tm0) * tile_k * tile_m,
-                                     tile_k * bigtile_m,
+                            copy_mem(Abuf_fast.begin()
+                                         + (tk * (m / tile_m) + tm0) * tile_k * tile_m / mi->sparsity(matrix::matrix_a),
+                                     tile_k * bigtile_m / mi->sparsity(matrix::matrix_a),
                                      tmp_a[slot].begin());
                             if constexpr (is_sparse)
                             {
@@ -508,7 +506,8 @@ public:
 
                                 matrix_a_t A(tile_m, tile_k);
                                 A.set_info(mi);
-                                A.load(tmp_a[slot].begin() + warp_id / warps_n * tile_k * tile_m,
+                                A.load(tmp_a[slot].begin()
+                                           + warp_id / warps_n * tile_k * tile_m / mi->sparsity(matrix::matrix_a),
                                        matrix::layout_optimal);
 
                                 if constexpr (is_sparse)
