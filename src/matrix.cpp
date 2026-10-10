@@ -515,6 +515,7 @@ public:
                         // Trigger copying of the first tile.
                         fetch(0, 0);
 
+                        assert((k / tile_k) % 2 == 0);
                         gpu_for(0, (k / tile_k), 2, [&](gpu_uint tk) {
                             for (unsigned int slot = 0; slot < 2; ++slot)
                             {
