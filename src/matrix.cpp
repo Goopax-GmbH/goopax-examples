@@ -404,8 +404,8 @@ public:
                     gpu_for_group(0, (m / bigtile_m) * (n / bigtile_n), [&](gpu_uint bigtile) {
                         gpu_uint btm = bigtile / (n / bigtile_n);
                         gpu_uint btn = bigtile % (n / bigtile_n);
-                        gpu_uint tm0 = btm * tile_m;
-                        gpu_uint tn0 = btn * tile_n;
+                        gpu_uint tm0 = btm * (bigtile_m/tile_m);
+                        gpu_uint tn0 = btn * (bigtile_n/tile_n);
                         gpu_uint warp_id = (local_id() / mi->Nthreads);
 
                         matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(tile_m, tile_n);
