@@ -373,11 +373,11 @@ public:
         // cout << "using mi=" << *mi << endl;
         Abuf_fast.assign(device, m * k / mi->sparsity(matrix::matrix_a));
         Bbuf_fast.assign(device, k * n);
-	if constexpr(with_block_scaling)
-	  {
-	    A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
-	    B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
-	  }
+        if constexpr (with_block_scaling)
+        {
+            A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
+            B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
+        }
 
         multiply.assign(
             device,
