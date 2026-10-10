@@ -404,8 +404,8 @@ public:
                     gpu_for_group(0, (m / bigtile_m) * (n / bigtile_n), [&](gpu_uint bigtile) {
                         gpu_uint btm = bigtile / (n / bigtile_n);
                         gpu_uint btn = bigtile % (n / bigtile_n);
-                        gpu_uint tm0 = btm * (bigtile_m/tile_m);
-                        gpu_uint tn0 = btn * (bigtile_n/tile_n);
+                        gpu_uint tm0 = btm * (bigtile_m / tile_m);
+                        gpu_uint tn0 = btn * (bigtile_n / tile_n);
                         gpu_uint warp_id = (local_id() / mi->Nthreads);
 
                         matrix::warp_matrix<typename make_cpu<c_float_type_nodebug>::type> D(tile_m, tile_n);
@@ -524,7 +524,7 @@ public:
                                     gpu_if(tk + slot != (k / tile_k) - 1)
                                     {
                                         // Trigger copying of the next tile.
-                                        fetch(1 - slot, tk + 1);
+                                        fetch(1 - slot, tk + slot + 1);
                                     }
                                     // And wait for the previous copy operation to finish.
                                     // bulk copy uses mbarrier synchronization mechanism. Alternating between two
@@ -536,7 +536,7 @@ public:
                                     gpu_if(tk + slot != (k / tile_k) - 1)
                                     {
                                         // Trigger copying of the next tile.
-                                        fetch(1 - slot, tk + 1);
+                                        fetch(1 - slot, tk + slot + 1);
 
                                         // And wait for the previous copy operation to finish.
                                         async_wait(1);
@@ -573,15 +573,19 @@ public:
                                                                           + warp_id % warps_n * tile_k * tile_n
                                                                                 / mi->block_scaling.block_width,
                                                                       matrix::layout_optimal);
+
                                     D += std::pair(A, A_bs) * std::pair(B, B_bs);
                                 }
                                 else
                                 {
                                     D += A * B;
                                 }
+
+                                local_barrier(memory::threadgroup);
                             }
                         });
-                        D.store(Dbuf.begin() + warp_id / warps_n * tile_m * n + warp_id % warps_n * tile_n + btm*bigtile_m*n + btn*bigtile_n,
+                        D.store(Dbuf.begin() + warp_id / warps_n * tile_m * n + warp_id % warps_n * tile_n
+                                    + btm * bigtile_m * n + btn * bigtile_n,
                                 matrix::row_major,
                                 n);
                     });
