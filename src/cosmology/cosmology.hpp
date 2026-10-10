@@ -1437,7 +1437,8 @@ struct Cosmos : public CosmosData<T>
                     show.need_split = {};
                     show.is_partnode = {};
 
-                    gpu_uint totnum0 = 0;
+		    /*
+		      gpu_uint totnum0 = 0;
                     for (auto cousin : get_surrounding(self, parent, 0, true, true))
                     {
                         if (get<1>(cousin) == 0)
@@ -1475,7 +1476,8 @@ struct Cosmos : public CosmosData<T>
                             totnum2 += tree[get<0>(cousin)].pend - tree[get<0>(cousin)].pbegin;
                         }
                     }
-
+		    */
+		    
                     gpu_uint totnum3 = 0;
                     for (auto cousin : get_surrounding(self, parent, 3, true, true))
                     {
