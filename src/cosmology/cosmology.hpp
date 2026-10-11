@@ -1382,9 +1382,9 @@ struct Cosmos : public CosmosData<T>
         , surrounding2_buf(device, max_treesize)
         , partnode_ranges_packed_buf(device, MAX_DEPTH() + 1)
         , all_leaf_ranges_packed_buf(device, MAX_DEPTH() + 1)
+        , nmr_scan(host_allocator<Node_memory_request<>>(device))
         , matter_tree(device, this->max_treesize)
         , scratch(reinterpret<buffer<Tuint>>(matter_tree))
-        , nmr_scan(host_allocator<Node_memory_request<>>(device))
     {
         std::queue<future<void>> futures;
         const std::launch policy = (PARALLEL_KERNEL_CREATION ? std::launch::async : std::launch::deferred);
@@ -2041,7 +2041,8 @@ struct Cosmos : public CosmosData<T>
                                 });
                             });
                         });
-                    cout << "created handle_particles_from_multipole[with_potential=" << with_potential << "]" << endl;
+                    cout << "created handle_particles_from_multipole[with_potential=" << with_potential
+                         << ", mod3=" << mod3 << "]" << endl;
                 }));
             }
 
@@ -2265,7 +2266,9 @@ struct Cosmos : public CosmosData<T>
                         array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
                         array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
 
+#ifndef NDEBUG
                         Tuint count2 = 0;
+#endif
                         for (auto uncle : get_surrounding(parent, tree[parent].parent, 0, true, false))
                         {
                             for (int c = 0; c < 2; ++c)
@@ -2282,7 +2285,9 @@ struct Cosmos : public CosmosData<T>
                                                                       &new_multipole_f32_2[c],
                                                                       &new_multipole_bf16_2[c]);
 
+#ifndef NDEBUG
                                         ++count2;
+#endif
                                     }
                                 }
                             }
