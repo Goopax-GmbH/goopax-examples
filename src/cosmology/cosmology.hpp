@@ -2065,13 +2065,16 @@ struct Cosmos : public CosmosData<T>
                         vector<gpu_uint> num_todo(cat.size(), 0);
 
                         auto doit = [&](Tuint c) {
+                            // Each thread in the workgroup is doing force calculations on cat[c] particles in parallel,
+                            // starting with pbegin.
                             auto [self, pbegin] = todo[c][num_todo[c] + local_id()];
-                            gpu_uint N = (tree[self].pend - pbegin);
+                            gpu_uint N =
+                                (tree[self].pend - pbegin); // Actual number of particles. May be smaller than cat[c].
                             if (c == 0)
                             {
                                 N = min(N, cat[c]);
                             }
-                            Tuint min_N = 1;
+                            Tuint min_N = 1; // Lower limit of number of particles.
                             if (c + 1 < cat.size())
                             {
                                 min_N = cat[c + 1] + 1;
@@ -2096,6 +2099,7 @@ struct Cosmos : public CosmosData<T>
                             vector<Vector<gpu_T, 3>> F2(cat[c], { 0, 0, 0 });
                             vector<gpu_T> P2(cat[c], 0);
                             {
+                                // Computing forces from particles in surrounding nodes.
                                 auto vicinity = get_surrounding(self, tree[self].parent, 3, true, false);
                                 private_mem<pair<Tuint, Tuint>> ranges(vicinity.size());
                                 for (Tuint k = 0; k < vicinity.size(); ++k)
@@ -2104,8 +2108,6 @@ struct Cosmos : public CosmosData<T>
                                 }
 
                                 // Starting with the self node, since it is not included in the surrounding list.
-                                // gpu_int si = -1;
-                                // gpu_uint other_node = vicinity[0];
                                 gpu_uint range_i = 0;
                                 gpu_uint other_p = ranges[0].first;
                                 gpu_uint other_pend = ranges[0].second;
@@ -2113,6 +2115,7 @@ struct Cosmos : public CosmosData<T>
                                 gpu_bool docontinue = true;
                                 gpu_while(docontinue)
                                 {
+                                    // Handling particle other_p.
                                     for (Tuint k = 0; k < cat[c]; ++k)
                                     {
                                         const Vector<gpu_T, 3> dist = x[other_p] - my_x[k];
@@ -2122,6 +2125,7 @@ struct Cosmos : public CosmosData<T>
 #else
                                     const gpu_T mass_other = mass[other_p];
 #endif
+                                        // Computing force from particle other_p.
                                         F2[k] += dist
                                                  * (mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING())
                                                     * pow2(pow<-1, 2>(dist.squaredNorm() + SMOOTHING())));
@@ -2135,9 +2139,12 @@ struct Cosmos : public CosmosData<T>
                                             P2[k] += -(mass_other * pow<-1, 2>(dist.squaredNorm() + SMOOTHING()));
                                         }
                                     }
+
+                                    // Find the next particle.
                                     ++other_p;
                                     gpu_while(other_p == other_pend)
                                     {
+                                        // Trying next node.
                                         ++range_i;
                                         gpu_if(range_i == vicinity.size())
                                         {
@@ -2169,6 +2176,7 @@ struct Cosmos : public CosmosData<T>
                         auto node_p = resource(partnode_ranges_packed_buf).cbegin();
                         gpu_uint self = global_id() + node_p->first;
 
+                        // Walking through the tree nodes.
                         gpu_while(node_p->second != 0)
                         {
                             gpu_uint group_end =
@@ -2183,6 +2191,8 @@ struct Cosmos : public CosmosData<T>
                                     pend = tree[self].pend;
                                 }
 
+                                // Examining the nodes, looking for nodes with similar particle numbers to balance the
+                                // work.
                                 for (Tuint c = 0; c < cat.size(); ++c)
                                 {
                                     auto run_c = [&]() {
@@ -2199,12 +2209,15 @@ struct Cosmos : public CosmosData<T>
 
                                         gpu_if(yes)
                                         {
+                                            // Marking the node for categoty c.
                                             todo[c][i] = { self, pbegin };
                                             pbegin += cat[c];
                                         }
 
                                         gpu_if(num_todo[c] >= local_size())
                                         {
+                                            // Found enough nodes in category c to work in parallel. Starting force
+                                            // calculations.
                                             num_todo[c] -= local_size();
                                             local_barrier(memory::threadgroup);
                                             doit(c);
@@ -2214,6 +2227,7 @@ struct Cosmos : public CosmosData<T>
 
                                     if (c == 0)
                                     {
+                                        // In case some node holds many particles, need to run run_c multiple times.
                                         gpu_while(work_group_any(gpu_int(pend - pbegin)
                                                                  > (int)cat[0] + (cat.size() >= 2 ? (int)cat[1] : 0)))
                                         {
