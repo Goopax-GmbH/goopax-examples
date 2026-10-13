@@ -26,7 +26,7 @@
 #define MULTIPOLE_ORDER 4
 static constexpr size_t multipole_alignment = 16;
 #define HAVE_BFLOAT16 1
-#define HAVE_BFLOAT16_ARITHMETIC 0
+#define HAVE_BFLOAT16_ARITHMETICS 1
 
 #define CONSTANT_MASS 1
 
@@ -51,7 +51,7 @@ constexpr T intceil(const T a, T mod)
 using signature_t = Tuint64_t;
 using gpu_signature_t = typename make_gpu<signature_t>::type;
 
-#if HAVE_BFLOAT16_ARITHMETIC
+#if HAVE_BFLOAT16_ARITHMETICS
 using intermediate_type = Tbfloat16;
 #else
 using intermediate_type = Tfloat;
@@ -448,7 +448,7 @@ struct Cosmos : public CosmosData<T>
     using matter_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
     using force_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
-#if HAVE_BFLOAT16_ARITHMETIC
+#if HAVE_BFLOAT16_ARITHMETICS
     using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #else
     using gpu_force_multipole_bf16 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
@@ -464,7 +464,7 @@ struct Cosmos : public CosmosData<T>
 #endif
     using gpu_matter_multipole = typename make_gpu<matter_multipole>::type;
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
-#if HAVE_BFLOAT16_ARITHMETIC
+#if HAVE_BFLOAT16_ARITHMETICS
     using gpu_intermediate_force_multipole = typename make_gpu<force_multipole>::type;
     using gpu_intermediate_matter_multipole = typename make_gpu<matter_multipole>::type;
 #else

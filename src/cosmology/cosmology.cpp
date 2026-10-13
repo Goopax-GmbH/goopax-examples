@@ -608,6 +608,15 @@ int main(int argc, char** argv)
                  << endl;
             exit(1);
         }
+#if HAVE_BFLOAT16_ARITHMETICS
+        if (!device.support_type(type_enum<precision::bf16>::value))
+        {
+            cout << "The device does not support bf16 arithmetics. You should disable HAVE_BFLOAT16_ARITHMETICS in "
+                    "cosmology.hpp."
+                 << endl;
+            exit(1);
+        }
+#endif
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
