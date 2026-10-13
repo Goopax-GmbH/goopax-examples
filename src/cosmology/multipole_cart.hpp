@@ -174,8 +174,8 @@ struct multipole_index
 
 
 template<typename T, typename... TPREV>
-struct
-//alignas(sizeof...(TPREV)==4 ? 16 : 4)
+struct 
+alignas(sizeof...(TPREV)==MULTIPOLE_ORDER ? multipole_alignment : 4)
 multipole<T, TPREV...> : public multipole<TPREV...>
 {
   using prev_t = multipole<TPREV...>;
