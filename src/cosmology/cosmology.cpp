@@ -553,10 +553,14 @@ void generate_IC(buffer_map<Vector<Tfloat, 3>> x, buffer_map<Vector<Tfloat, 3>> 
 
 int main(int argc, char** argv)
 {
-    cout << "sizeof(matter_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl;
-    cout << "sizeof(force_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl;
-    cout << "alignof(matter_multipole)=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl;
-    cout << "alignof(force_multipole)=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl;
+    cout << "sizeof(matter_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole)
+         << ", alignof=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl
+         << "sizeof(force_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole)
+         << ", alignof=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl
+         << "sizeof(treenode)=" << sizeof(treenode<>) << ", alignof=" << alignof(treenode<>) << endl
+         << "sizeof(scratch_treenode)=" << sizeof(scratch_treenode<Tfloat>)
+         << ", alignof=" << alignof(scratch_treenode<Tfloat>) << endl
+         << endl;
 
     init_params(argc, argv);
 
@@ -604,6 +608,15 @@ int main(int argc, char** argv)
                  << endl;
             exit(1);
         }
+#if HAVE_BFLOAT16_ARITHMETICS
+        if (!device.support_type(type_enum<precision::bf16>::value))
+        {
+            cout << "The device does not support bf16 arithmetics. You should disable HAVE_BFLOAT16_ARITHMETICS in "
+                    "cosmology.hpp."
+                 << endl;
+            exit(1);
+        }
+#endif
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
