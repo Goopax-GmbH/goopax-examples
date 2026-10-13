@@ -26,6 +26,7 @@
 #define MULTIPOLE_ORDER 4
 static constexpr size_t multipole_alignment = 16;
 #define HAVE_BFLOAT16 1
+#define HAVE_BFLOAT16_ARITHMETIC 0
 
 #define CONSTANT_MASS 1
 
@@ -49,6 +50,13 @@ constexpr T intceil(const T a, T mod)
 
 using signature_t = Tuint64_t;
 using gpu_signature_t = typename make_gpu<signature_t>::type;
+
+#if HAVE_BFLOAT16_ARITHMETIC
+using intermediate_type = Tbfloat16;
+#else
+using intermediate_type = Tfloat;
+#endif
+using gpu_intermediate_type = typename make_gpu<intermediate_type>::type;
 
 #define CALC_POTENTIAL 1
 
@@ -440,10 +448,14 @@ struct Cosmos : public CosmosData<T>
     using matter_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
     using force_multipole = multipole<Tbfloat16, Tbfloat16, Tbfloat16, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
-    using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
+#if HAVE_BFLOAT16_ARITHMETIC
+  using gpu_force_multipole_bf16 = multipole<gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16, gpu_bfloat16>;
 #else
-    using matter_multipole = multipole<T, T, T, T, T>;
-    using force_multipole = multipole<T, T, T, T, T>;
+  using gpu_force_multipole_bf16 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
+#endif
+#else
+  using matter_multipole = multipole<T, T, T, T, T>;
+  using force_multipole = multipole<T, T, T, T, T>;
     using gpu_force_multipole_f32 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
     using gpu_force_multipole_bf16 = multipole<gpu_float, gpu_float, gpu_float, gpu_float, gpu_float>;
 #endif
@@ -452,6 +464,13 @@ struct Cosmos : public CosmosData<T>
 #endif
     using gpu_matter_multipole = typename make_gpu<matter_multipole>::type;
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
+#if HAVE_BFLOAT16_ARITHMETIC
+  using gpu_intermediate_force_multipole = typename make_gpu<force_multipole>::type;
+  using gpu_intermediate_matter_multipole = typename make_gpu<matter_multipole>::type;
+#else
+  using gpu_intermediate_force_multipole = gpu_force_multipole_f32;
+  using gpu_intermediate_matter_multipole = gpu_force_multipole_f32;
+#endif
 
     goopax_device device;
     const Tuint max_particles;
@@ -1940,26 +1959,26 @@ struct Cosmos : public CosmosData<T>
                     ) {
                         gpu_for_global(
                             treeranges_withchild_nochild[0], treeranges_withchild_nochild[1], [&](gpu_uint t) {
-                                gpu_matter_multipole Msum_r = zero;
+                                gpu_intermediate_matter_multipole Msum_r = zero;
 
                                 for (int child = 0; child < 2; ++child)
                                 {
                                     const gpu_uint child_id = this->tree[t].children[child];
-                                    const gpu_matter_multipole Mcr = matter_tree[child_id];
+                                    auto Mcr= static_cast<gpu_intermediate_matter_multipole>(matter_tree[child_id]);
                                     Vector<double, 3> shift_r = { (1.0 - (2.0 * child)), 0, 0 };
-                                    gpu_matter_multipole Mr = Mcr.rot(-1).scale_ext(pow<-1, 3>(2.0)).shift_ext(shift_r);
+                                    gpu_intermediate_matter_multipole Mr = Mcr.rot(-1).scale_ext(pow<-1, 3>(2.0)).shift_ext(shift_r);
                                     Msum_r += Mr;
                                 }
-                                matter_tree[t] = Msum_r;
+                                matter_tree[t] = static_cast<gpu_matter_multipole>(Msum_r);
                             });
 
                         gpu_for_global(
                             treeranges_withchild_nochild[1], treeranges_withchild_nochild[2], [&](gpu_uint t) {
-                                gpu_matter_multipole Msum_r = zero;
+                                gpu_intermediate_matter_multipole Msum_r = zero;
 
                                 gpu_for(this->tree[t].pbegin, this->tree[t].pend, [&](gpu_uint p) {
                                     allow_preload();
-                                    Msum_r += gpu_matter_multipole::from_particle(
+                                    Msum_r += gpu_intermediate_matter_multipole::from_particle(
                                         ((rot(x[p], mod3) - this->tree[t].rcenter) * scale).eval()
 #if CONSTANT_MASS
                                             ,
@@ -1969,7 +1988,7 @@ struct Cosmos : public CosmosData<T>
 #endif
                                     );
                                 });
-                                matter_tree[t] = Msum_r;
+                                matter_tree[t] = static_cast<gpu_matter_multipole>(Msum_r);
                             });
                     });
                 cout << "created upwards[mod3=" << mod3 << "]" << endl;
@@ -2017,13 +2036,13 @@ struct Cosmos : public CosmosData<T>
 #endif
 
                                     Vector<gpu_T, 3> F =
-                                        rot(force_tree[self % force_tree.size()].calc_force(
+				      rot(static_cast<gpu_intermediate_force_multipole>(force_tree[self % force_tree.size()]).calc_force(
                                                 ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval()),
                                             -(Tint)mod3)
                                         * pow2(scale);
 
 #if CALC_POTENTIAL
-                                    gpu_T P = force_tree[self % force_tree.size()].calc_loc_potential(
+                                    gpu_T P = static_cast<gpu_intermediate_force_multipole>(force_tree[self % force_tree.size()]).calc_loc_potential(
                                                   ((rot(x[pa], mod3) - this->tree[self].rcenter) * scale).eval())
                                               * scale;
 #endif
@@ -2259,7 +2278,7 @@ struct Cosmos : public CosmosData<T>
                     gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
                         gpu_assert(this->tree[parent].need_split);
 
-                        const auto parent_treenode = force_tree[parent % force_tree.size()];
+                        const auto parent_treenode = static_cast<gpu_intermediate_force_multipole>(force_tree[parent % force_tree.size()]);
 
                         array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
                         array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
@@ -2279,7 +2298,7 @@ struct Cosmos : public CosmosData<T>
                                     {
                                         gpu_uint cousin = this->tree[get<0>(uncle)].children[c2];
 
-                                        matter_tree[cousin].makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
+                                        static_cast<gpu_intermediate_matter_multipole>(matter_tree[cousin]).makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
                                                                       &new_multipole_f32_2[c],
                                                                       &new_multipole_bf16_2[c]);
 
@@ -2294,9 +2313,9 @@ struct Cosmos : public CosmosData<T>
 
                         for (int c = 0; c < 2; ++c)
                         {
-                            gpu_force_multipole new_multipole =
-                                static_cast<gpu_force_multipole>(new_multipole_bf16_2[c]);
-                            new_multipole += static_cast<gpu_force_multipole>(new_multipole_f32_2[c]);
+			  auto new_multipole =
+                                static_cast<gpu_intermediate_force_multipole>(new_multipole_bf16_2[c]);
+                            new_multipole += static_cast<gpu_intermediate_force_multipole>(new_multipole_f32_2[c]);
 
                             Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
                             new_multipole += parent_treenode.rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
@@ -2309,7 +2328,7 @@ struct Cosmos : public CosmosData<T>
                             }
 
                             gpu_uint self = this->tree[parent].children[c];
-                            force_tree[self % force_tree.size()] = new_multipole;
+                            force_tree[self % force_tree.size()] = static_cast<gpu_force_multipole>(new_multipole);
                         }
                     });
                 });
