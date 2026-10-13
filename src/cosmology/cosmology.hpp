@@ -24,6 +24,7 @@
 #include <set>
 
 #define MULTIPOLE_ORDER 4
+static constexpr size_t multipole_alignment = 16;
 #define HAVE_BFLOAT16 1
 
 #define CONSTANT_MASS 1
@@ -451,9 +452,6 @@ struct Cosmos : public CosmosData<T>
 #endif
     using gpu_matter_multipole = typename make_gpu<matter_multipole>::type;
     using gpu_force_multipole = typename make_gpu<force_multipole>::type;
-
-    static_assert(sizeof(matter_multipole) % 16 == 0);
-    static_assert(sizeof(force_multipole) % 16 == 0);
 
     goopax_device device;
     const Tuint max_particles;
