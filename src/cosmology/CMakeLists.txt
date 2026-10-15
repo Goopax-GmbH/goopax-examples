@@ -48,5 +48,6 @@ if (TARGET cosmology)
   if (APPLE)
     SET_SOURCE_FILES_PROPERTIES(cosmology.cpp PROPERTIES LANGUAGE OBJCXX)
   endif()
+  target_link_libraries(cosmology stdc++exp)
 endif()
 
