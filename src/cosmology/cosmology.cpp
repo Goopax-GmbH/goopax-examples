@@ -600,7 +600,7 @@ int main(int argc, char** argv)
         }
 
         cout << "device.max_registers()=" << device.max_registers() << endl;
-        if (device.max_registers() < 220)
+        if (device.max_registers() < 220 && device.get_envmode() != env_CPU)
         {
             cout << "cosmology is optimised for GPUs with 256 registers per thread. It will perform poorly on other "
                     "devices. If you think you know what you are doing, remove this exit(1) call and proceed at your "
