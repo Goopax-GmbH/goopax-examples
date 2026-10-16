@@ -54,7 +54,7 @@ PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 1000000); // Number of particle
 PARAMOPT<double> TREE_FACTOR("tree_factor", 0.8);
 PARAMOPT<double> FORCE_TREE_FACTOR("force_tree_factor", 0.3);
 PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
-PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 410);
+PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 650);
 PARAMOPT<Tdouble> DT("dt", 1E-3);
 
 template<class T>
@@ -667,7 +667,7 @@ int main(int argc, char** argv)
                 {
                     hdf5_reader reader(fn.string());
                     num_particles = reader.npart[1];
-                    make_tree_every = 16;
+                    make_tree_every = 32;
                 }
 #endif
             }
@@ -934,7 +934,7 @@ int main(int argc, char** argv)
                     auto simu_stop = steady_clock::now();
                     cout << "PERFORMANCE: " << step - 1 << " steps in "
                          << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << " -> "
-                         << duration_cast<std::chrono::microseconds>((simu_stop - simu_start) / (step - 1))
+                         << duration_cast<std::chrono::microseconds>((simu_stop - simu_start) / (unrange(step) - 1))
                          << " per step" << endl;
                     cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE()
                          << ", min_tree_depth=" << min_tree_depth << endl;
