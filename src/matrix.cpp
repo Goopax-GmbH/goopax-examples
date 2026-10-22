@@ -47,11 +47,25 @@ void fill_random(buffer<T>& a)
     static static_kernel sk([](resource<T>& a) {
         static static_device_object static_rnd([](goopax_device device) {
             std::random_device rd;
-            return WELL512_data(device, device.default_global_size_max(), rd());
+            return WELL512_data(device, device.default_global_size_max(), 1);
         });
+
         WELL512_lib rndlib(static_rnd(get_current_build_device()));
-        for_each_global(a,
-                        [&](auto& x) { x = static_cast<typename make_gpu<T>::type>(rndlib.gaussian_distribution()); });
+        gpu_for_global(a.begin(), a.end(), par_unroll(max(8 / bitsize<T>::value, size_t(1))), [&](auto p) {
+            if constexpr (!goopax_is_signed<typename remove_debug<T>::type>::value)
+            {
+                // Block scaling type.
+                static_assert(sizeof(T) == 1);
+                static_assert(goopax_is_floating_point<typename remove_debug<T>::type>::value);
+
+                *p = static_cast<typename make_gpu<T>::type>(exp(rndlib.gaussian_distribution()));
+            }
+            else
+            {
+                // Ordinary type.
+                *p = static_cast<typename make_gpu<T>::type>(rndlib.gaussian_distribution());
+            }
+        });
     });
 
     sk(device, a);
@@ -65,7 +79,7 @@ void make_sparse(buffer<T>& a, const matrix::matrix_support_info::sparse_t& spar
     static static_kernel sk([&sparse](resource<T>& a) {
         static static_device_object static_rnd([](goopax_device device) {
             std::random_device rd;
-            return xoshiro128_data(device, device.default_global_size_max(), rd());
+            return xoshiro128_data(device, device.default_global_size_max(), 1);
         });
 
         xoshiro128_lib rndlib(static_rnd(get_current_build_device()));
@@ -149,9 +163,9 @@ template<typename a_float_type,
 class Matmul
 {
 public:
-    using a_float_type_nodebug = typename unrangetype<a_float_type>::type;
-    using b_float_type_nodebug = typename unrangetype<b_float_type>::type;
-    using c_float_type_nodebug = typename unrangetype<c_float_type>::type;
+    using a_float_type_nodebug = typename remove_debug<a_float_type>::type;
+    using b_float_type_nodebug = typename remove_debug<b_float_type>::type;
+    using c_float_type_nodebug = typename remove_debug<c_float_type>::type;
 
     using matrix_a_t = typename std::
         conditional<is_sparse, matrix::sparse_matrix<a_float_type>, matrix::warp_matrix<a_float_type>>::type;
@@ -194,26 +208,26 @@ public:
             gpu_for_group(0, (rows / tile_rows) * (cols / tile_cols), [&](gpu_uint tile) {
                 gpu_uint tr;
                 gpu_uint tc;
-
+                matrix::layout_t layout = (use == matrix::matrix_b || use == matrix::matrix_block_scaling_b)
+                                              ? matrix::col_major
+                                              : matrix::row_major;
                 // Arrange the tiles in row_major for matrix_b and col_major for matrix_a.
-                if (use == matrix::matrix_b || use == matrix::matrix_block_scaling_b)
+                if (layout == matrix::col_major)
                 {
                     tr = tile / (cols / tile_cols);
                     tc = tile % (cols / tile_cols);
                 }
-                else if (use == matrix::matrix_a || use == matrix::matrix_block_scaling_a)
+                else
                 {
                     tc = tile / (rows / tile_rows);
                     tr = tile % (rows / tile_rows);
                 }
-                else
-                    abort();
 
                 if (is_sparse && use == matrix::matrix_a)
                 {
                     if constexpr (is_sparse)
                     {
-                        matrix::sparse_matrix<typename unrangetype<T>::type> M(tile_rows, tile_cols);
+                        matrix::sparse_matrix<typename remove_debug<T>::type> M(tile_rows, tile_cols);
                         M.set_info(mi);
                         M.set_use(use);
                         if constexpr (from_dense)
@@ -224,7 +238,7 @@ public:
                         else
                         {
                             M.load_cast(Mbuf.begin() + (tr * tile_rows * cols + tc * tile_cols) / mi->sparsity(use),
-                                        matrix::row_major,
+                                        layout,
                                         cols);
                         }
                         M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols / mi->sparsity(use),
@@ -237,8 +251,15 @@ public:
                 }
                 else
                 {
-                    matrix::warp_matrix<typename unrangetype<T>::type> M(tile_rows, tile_cols);
-                    M.load_cast(Mbuf.begin() + tr * tile_rows * cols + tc * tile_cols, matrix::row_major, cols);
+                    matrix::warp_matrix<typename remove_debug<T>::type> M(tile_rows, tile_cols);
+                    if (layout == matrix::col_major)
+                    {
+                        M.load_cast(Mbuf.begin() + tc * tile_cols * rows + tr * tile_rows, layout, rows);
+                    }
+                    else
+                    {
+                        M.load_cast(Mbuf.begin() + tr * tile_rows * cols + tc * tile_cols, layout, cols);
+                    }
                     M.set_info(mi);
                     M.set_use(use);
                     M.store(Mbuf_fast.begin() + tile * tile_rows * tile_cols, matrix::layout_optimal);
@@ -257,6 +278,7 @@ public:
            unsigned int force_ls)
         : device(device0)
     {
+        // Fine-tuning matrix tile sizes.
         tile_m = 64;
         tile_n = 128;
         tile_k = 16;
@@ -271,11 +293,11 @@ public:
         {
             tile_k = 32;
         }
-        if (std::is_same_v<a_float_type, precision::fp4e2m1>)
+        if (std::is_same_v<a_float_type_nodebug, precision::fp4e2m1>)
         {
             tile_k = 64;
         }
-        if (std::is_same_v<a_float_type, double>)
+        if (std::is_same_v<a_float_type_nodebug, double>)
         {
             tile_m = 8;
             tile_n = 16;
@@ -308,6 +330,7 @@ public:
             throw std::runtime_error("big matrix sizes must be multiples of tile sizes");
         }
 
+        // Looking for suitable matrix_support_info.
         Tuint ws;
         for (const matrix::matrix_support_info* mi_try = device.get_matrix_support_table(); mi_try;
              mi_try = mi_try->next)
@@ -325,15 +348,19 @@ public:
         }
         if (mi == nullptr)
         {
+            // Requested matrix operation not available on the device.
             return;
         }
-        // cout << "using mi=" << *mi << endl;
+        if (VERB)
+        {
+            cout << "using mi=" << *mi << endl;
+        }
         Abuf_fast.assign(device, m * k / mi->sparsity(matrix::matrix_a));
         Bbuf_fast.assign(device, k * n);
         if constexpr (with_block_scaling)
         {
-            A_bs_buf_fast.assign(device, Abuf_fast.size() / mi->block_scaling.block_width);
-            B_bs_buf_fast.assign(device, Bbuf_fast.size() / mi->block_scaling.block_width);
+            A_bs_buf_fast.assign(device, m * k / mi->block_scaling.block_width);
+            B_bs_buf_fast.assign(device, k * n / mi->block_scaling.block_width);
         }
 
         multiply.assign(
@@ -353,6 +380,8 @@ public:
 
                 if (ls == ws)
                 {
+                    // Simple mode. Workgroup size equal to warp size. Loading and storing directly to global memory in
+                    // this case.
                     gpu_for_group(0, (m / tile_m) * (n / tile_n), [&](gpu_uint tile) {
                         gpu_uint tm = tile / (n / tile_n);
                         gpu_uint tn = tile % (n / tile_n);
@@ -361,35 +390,32 @@ public:
                         D.fill(0);
 
                         gpu_for(0, (k / tile_k), [&](gpu_uint tk) {
+                            gpu_uint tile_A = tk * (m / tile_m) + tm;
+                            gpu_uint tile_B = tk * (n / tile_n) + tn;
+
                             matrix_a_t A(tile_m, tile_k);
                             A.set_info(mi);
-                            A.load(Abuf_fast.begin()
-                                       + (tk * (m / tile_m) + tm) * tile_m * tile_k / mi->sparsity(matrix::matrix_a),
+                            A.load(Abuf_fast.begin() + tile_A * tile_m * tile_k / mi->sparsity(matrix::matrix_a),
                                    matrix::layout_optimal);
                             if constexpr (is_sparse)
                             {
-                                A.load_metadata(sparse_md.begin() + (tk * (m / tile_m) + tm) * sparse_md_tile_size);
+                                A.load_metadata(sparse_md.begin() + tile_A * sparse_md_tile_size);
                             }
                             matrix::warp_matrix<typename make_cpu<b_float_type_nodebug>::type> B(
-                                tile_k,
-                                tile_n,
-                                Bbuf_fast.begin() + (tk * (n / tile_n) + tn) * tile_k * tile_n,
-                                matrix::layout_optimal);
+                                tile_k, tile_n, Bbuf_fast.begin() + tile_B * tile_k * tile_n, matrix::layout_optimal);
 
                             if constexpr (with_block_scaling)
                             {
-                                matrix::warp_matrix<bs_type> A_bs(tile_m,
-                                                                  tile_k / mi->block_scaling.block_width,
-                                                                  A_bs_buf_fast.begin()
-                                                                      + (tm * (k / tile_k) + tk) * tile_m * tile_k
-                                                                            / mi->block_scaling.block_width,
-                                                                  matrix::layout_optimal);
-                                matrix::warp_matrix<bs_type> B_bs(tile_k / mi->block_scaling.block_width,
-                                                                  tile_n,
-                                                                  B_bs_buf_fast.begin()
-                                                                      + (tn * (k / tile_k) + tk) * tile_k * tile_n
-                                                                            / mi->block_scaling.block_width,
-                                                                  matrix::layout_optimal);
+                                matrix::warp_matrix<bs_type> A_bs(
+                                    tile_m,
+                                    tile_k / mi->block_scaling.block_width,
+                                    A_bs_buf_fast.begin() + tile_A * (tile_m * tile_k / mi->block_scaling.block_width),
+                                    matrix::layout_optimal);
+                                matrix::warp_matrix<bs_type> B_bs(
+                                    tile_k / mi->block_scaling.block_width,
+                                    tile_n,
+                                    B_bs_buf_fast.begin() + tile_B * (tile_k * tile_n / mi->block_scaling.block_width),
+                                    matrix::layout_optimal);
                                 D += std::pair(A, A_bs) * std::pair(B, B_bs);
                             }
                             else
@@ -402,6 +428,7 @@ public:
                 }
                 else
                 {
+                    // Tiled mode. Using local_mem as cache.
                     const bool use_bulk_copy = device.support_bulk_copy() && USE_BULK_COPY;
                     const bool use_async_copy = device.support_async_copy() && USE_ASYNC_COPY;
                     optional<mbarriers> mbar;
@@ -638,11 +665,11 @@ public:
 };
 
 template<typename a_float_type, typename b_float_type, typename c_float_type, typename scale_type>
-Tdouble verify(span<const a_float_type> Adata,
-               span<const b_float_type> Bdata,
-               span<const c_float_type> Ddata,
-               span<const scale_type> A_bs_data,
-               span<const scale_type> B_bs_data,
+Tdouble verify(const_buffer_map<a_float_type> Adata,
+               const_buffer_map<b_float_type> Bdata,
+               const_buffer_map<c_float_type> Ddata,
+               const_buffer_map<scale_type> A_bs_data,
+               const_buffer_map<scale_type> B_bs_data,
                unsigned int m,
                unsigned int n,
                unsigned int k)
@@ -657,12 +684,31 @@ Tdouble verify(span<const a_float_type> Adata,
             e = distribution(generator);
         }
     }
-    MatrixX<Tdouble> A =
-        Map<Matrix<a_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<a_float_type*>(Adata.data()), m, k)
-            .template cast<Tdouble>();
-    MatrixX<Tdouble> B =
-        Map<Matrix<b_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<b_float_type*>(Bdata.data()), k, n)
-            .template cast<Tdouble>();
+    MatrixX<Tdouble> A;
+    MatrixX<Tdouble> B;
+    if constexpr (bitsize<a_float_type>::value == 4)
+    {
+        vector<Tdouble> Atmp;
+        for (auto p = Adata.begin(); p != Adata.end(); ++p)
+        {
+            Atmp.push_back(*p);
+        }
+        vector<Tdouble> Btmp;
+        for (auto p = Bdata.begin(); p != Bdata.end(); ++p)
+        {
+            Btmp.push_back(*p);
+        }
+
+        A = Map<Matrix<Tdouble, Dynamic, Dynamic, RowMajor>>(Atmp.data(), m, k);
+        B = Map<Matrix<Tdouble, Dynamic, Dynamic, ColMajor>>(Btmp.data(), k, n);
+    }
+    else
+    {
+        A = Map<Matrix<a_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<a_float_type*>(Adata.data()), m, k)
+                .template cast<Tdouble>();
+        B = Map<Matrix<b_float_type, Dynamic, Dynamic, ColMajor>>(const_cast<b_float_type*>(Bdata.data()), k, n)
+                .template cast<Tdouble>();
+    }
     MatrixX<Tdouble> D =
         Map<Matrix<c_float_type, Dynamic, Dynamic, RowMajor>>(const_cast<c_float_type*>(Ddata.data()), m, n)
             .template cast<Tdouble>();
@@ -675,10 +721,10 @@ Tdouble verify(span<const a_float_type> Adata,
     }
     if (!A_bs_data.empty())
     {
-        unsigned int block_width = Adata.size() / A_bs_data.size();
+        unsigned int block_width = Bdata.size() / B_bs_data.size();
         MatrixX<scale_type> A_bs = Map<Matrix<scale_type, Dynamic, Dynamic, RowMajor>>(
             const_cast<scale_type*>(A_bs_data.data()), m, k / block_width);
-        MatrixX<scale_type> B_bs = Map<Matrix<scale_type, Dynamic, Dynamic, RowMajor>>(
+        MatrixX<scale_type> B_bs = Map<Matrix<scale_type, Dynamic, Dynamic, ColMajor>>(
             const_cast<scale_type*>(B_bs_data.data()), k / block_width, n);
         for (unsigned int r = 0; r < m; ++r)
         {
@@ -755,14 +801,24 @@ void run2(goopax_device device)
     {
         matmul.prepare_A(A);
     }
+
     matmul.prepare_B(B);
 
     if (with_block_scaling)
     {
         A_bs.assign(device, M * K / matmul.mi->block_scaling.block_width);
         B_bs.assign(device, K * N / matmul.mi->block_scaling.block_width);
-        A_bs.fill(2);
-        B_bs.fill(4);
+        fill_random(A_bs);
+        fill_random(B_bs);
+
+        /*
+          A_bs.fill(1);
+          B_bs.fill(0);
+          {
+            buffer_map bs(B_bs);
+            bs[1] = 1;
+          }
+        */
 
         matmul.prepare_A_bs(A_bs);
         matmul.prepare_B_bs(B_bs);
@@ -852,8 +908,8 @@ int main(int argc, char** argv)
     for (auto device : devices(GOOPAX_DEBUG ? env_CPU : env_GPU))
     {
         cout << "running on device " << device.name() << ", env=" << device.get_envmode() << endl;
-        cout << "matrix sizes: matrix<T_A, " << M() << ", " << K() << "> * matrix<T_B, " << K() << ", " << N()
-             << "> + matrix<T_C, " << M() << ", " << N() << ">" << endl;
+        cout << "matrix<T_C, " << M() << ", " << N() << "> = matrix<T_A, " << M() << ", " << K() << "> * matrix<T_B, "
+             << K() << ", " << N() << ">" << endl;
 
         run_with_types<Thalf, Thalf, Thalf, Thalf, Thalf>(device);
         run_with_types<Thalf, Thalf, Tfloat, Thalf, Thalf>(device);
@@ -866,7 +922,11 @@ int main(int argc, char** argv)
                        Tdebugtype<precision::fp8e5m2>>(device);
         // run_with_types<precision::fp8e3m2, precision::fp8e2m3, Tfloat>(device);
         // run_with_types<precision::fp8e2m1, precision::fp8e2m1, Tfloat>(device);
-        run_with_types<Tdebugtype<precision::fp4e2m1>, Tdebugtype<precision::fp4e2m1>, Tfloat, Tfloat, Tfloat>(device);
+        run_with_types<Tdebugtype<precision::fp4e2m1>,
+                       Tdebugtype<precision::fp4e2m1>,
+                       Tfloat,
+                       Tdebugtype<precision::fp4e2m1>,
+                       Tdebugtype<precision::fp4e2m1>>(device);
         run_with_types<Ttf32, Ttf32, Tfloat, Tfloat, Tfloat>(device);
         run_with_types<Tint8_t, Tint8_t, Tint, Tint8_t, Tint8_t>(device);
         run_with_types<Tdebugtype<precision::int4>, Tdebugtype<precision::int4>, Tint, Tint8_t, Tint8_t>(device);
