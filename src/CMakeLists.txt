@@ -5,7 +5,7 @@ project(goopax_examples LANGUAGES C CXX)
 if (CMAKE_VERSION VERSION_LESS "3.20")
   set (CMAKE_CXX_STANDARD 20)
 else()
-  set (CMAKE_CXX_STANDARD 26)
+  set (CMAKE_CXX_STANDARD 23)
 endif()
 
 # Disabling cuda-interop example by default because of compatibility issues between cuda and recent gcc versions
