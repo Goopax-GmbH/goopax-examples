@@ -31,6 +31,7 @@ PARAMOPT<unsigned int> K("k", 4096);
 // Use this workgroup size. If 0, a suitable value will be chosen.
 PARAMOPT<unsigned int> LOCAL_SIZE("local_size", 0);
 
+// Matrix tile sizes. If 0, suitable values will be chosen.
 PARAMOPT<unsigned int> TILE_M("tile_m", 0);
 PARAMOPT<unsigned int> TILE_N("tile_n", 0);
 PARAMOPT<unsigned int> TILE_K("tile_k", 0);
@@ -38,73 +39,22 @@ PARAMOPT<unsigned int> TILE_K("tile_k", 0);
 PARAMOPT<bool> USE_BULK_COPY("use_bulk_copy", true);
 PARAMOPT<bool> USE_ASYNC_COPY("use_async_copy", true);
 
-template<typename func_t>
-auto static_kernel(goopax_device device, func_t code)
-{
-    using kernel_t = decltype(kernel(device, code));
-
-    static std::mutex Mutex;
-    static std::unordered_map<detail::goopax_device_impl*, kernel_t> kernel_cache;
-
-    kernel_t k;
-    {
-        std::lock_guard lock(Mutex);
-        auto p = kernel_cache.find(device.get_impl());
-        if (p == kernel_cache.end())
-        {
-            p = kernel_cache.emplace(device.get_impl(), kernel_t(device, code)).first;
-
-            detail::release(device.get_impl());
-            device.at_device_cleanup(
-                [](void* data) {
-                    detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
-                    detail::retain(device);
-                    std::lock_guard lock(Mutex);
-                    kernel_cache.erase(device);
-                },
-                device.get_impl());
-        }
-        k = p->second;
-    }
-    return k;
-}
-
-template<typename rnd_t>
-rnd_t& static_rnd(goopax_device device)
-{
-    static std::unordered_map<detail::goopax_device_impl*, rnd_t> rnd_cache;
-
-    static std::mutex Mutex;
-    std::lock_guard lock(Mutex);
-
-    auto r = rnd_cache.find(device.get_impl());
-    if (r == rnd_cache.end())
-    {
-        std::random_device rd;
-        r = rnd_cache.emplace(device.get_impl(), rnd_t(device, device.default_global_size_max(), rd())).first;
-        detail::release(device.get_impl());
-        device.at_device_cleanup(
-            [](void* data) {
-                detail::goopax_device_impl* device = static_cast<detail::goopax_device_impl*>(data);
-                detail::retain(device);
-                std::lock_guard lock(Mutex);
-                rnd_cache.erase(device);
-            },
-            device.get_impl());
-    }
-    return r->second;
-}
-
 template<typename T>
 void fill_random(buffer<T>& a)
 {
     goopax_device device = a.get_device();
 
-    static_kernel(device, [device](resource<T>& a) {
-        WELL512_lib rndlib(static_rnd<WELL512_data>(device));
+    static static_kernel sk([](resource<T>& a) {
+        static static_device_object static_rnd([](goopax_device device) {
+            std::random_device rd;
+            return WELL512_data(device, device.default_global_size_max(), rd());
+        });
+        WELL512_lib rndlib(static_rnd(get_current_build_device()));
         for_each_global(a,
                         [&](auto& x) { x = static_cast<typename make_gpu<T>::type>(rndlib.gaussian_distribution()); });
-    })(a);
+    });
+
+    sk(device, a);
 }
 
 template<typename T>
@@ -112,11 +62,16 @@ void make_sparse(buffer<T>& a, const matrix::matrix_support_info::sparse_t& spar
 {
     goopax_device device = a.get_device();
 
-    static_kernel(device, [&sparse](resource<T>& a) {
-        xoshiro128_lib rndlib(static_rnd<xoshiro128_data>(get_current_build_device()));
+    static static_kernel sk([&sparse](resource<T>& a) {
+        static static_device_object static_rnd([](goopax_device device) {
+            std::random_device rd;
+            return xoshiro128_data(device, device.default_global_size_max(), rd());
+        });
+
+        xoshiro128_lib rndlib(static_rnd(get_current_build_device()));
         gpu_for_global(a.begin(), a.end(), sparse.blocksize, [&](auto p) {
-            gpu_uint bits = rndlib.next() & ((1 << sparse.blocksize / sparse.vector_width) - 1);
-            gpu_while(popcount(bits) != sparse.non_null_per_block / sparse.vector_width)
+            gpu_uint bits;
+            gpu_do_while(popcount(bits) != sparse.non_null_per_block / sparse.vector_width)
             {
                 bits = rndlib.next() & ((1 << sparse.blocksize / sparse.vector_width) - 1);
             }
@@ -131,7 +86,9 @@ void make_sparse(buffer<T>& a, const matrix::matrix_support_info::sparse_t& spar
                 }
             }
         });
-    })(a);
+    });
+
+    sk(device, a);
 }
 
 template<typename src_ptr_t, typename dest_ptr_t>
