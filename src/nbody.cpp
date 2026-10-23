@@ -19,7 +19,7 @@ using namespace goopax;
 using namespace std;
 using goopax::detail::PI;
 
-PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 65536); // Number of particles
+PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 131072); // Number of particles
 PARAMOPT<Tdouble> DT("dt", 5E-3);
 
 void init(buffer<Vector3<float>>& x, buffer<Vector3<float>>& v)
@@ -97,6 +97,8 @@ int main(int argc, char** argv)
     buffer<Vector3<float>> v(device, N);
     init(x, v);
 
+#if 0
+    // Old version
     kernel CalculateForce(
         device,
         [dt, mass](const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
@@ -113,6 +115,44 @@ int main(int argc, char** argv)
         },
         0,
         N);
+
+#else
+    // Parallel version. Multiple particles are handled in parallel by each thread. Hence better use of registers. Hence
+    // higher performance.
+    const unsigned par = 16;
+    kernel CalculateForce(
+        device,
+        [dt, mass, N, par](
+            const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
+            gpu_uint i = group_id() * par;
+            vector<Vector3<gpu_float>> F(par, { 0, 0, 0 });
+
+            gpu_for_local(0, x.size(), [&](gpu_uint k) {
+                for (unsigned s = 0; s < par; ++s)
+                {
+                    Vector3<gpu_float> r = x[k] - x[i + s];
+                    F[s] += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
+                }
+            });
+
+            for (unsigned s = 0; s < par; ++s)
+            {
+                F[s] = work_group_reduce_add(F[s], local_size());
+            }
+
+            gpu_if(elect().first)
+            {
+                for (unsigned s = 0; s < par; ++s)
+                {
+                    v[i + s] += F[s] * (dt * mass);
+                    xnew[i + s] = x[i + s] + v[i + s] * dt;
+                }
+            }
+        },
+        device.default_local_size(),
+        device.default_local_size() * N / par);
+
+#endif
 
     float distance = 2;
     Vector<float, 2> theta = { 0, 0 };
@@ -189,7 +229,10 @@ int main(int argc, char** argv)
             if (Renderer.pipelineText)
             {
                 stringstream ss;
-                ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
+                ss << "N-Body (direct force)" << endl
+                   << "device: " << device.name() << endl
+                   << "N=" << N << endl
+                   << "fps: " << rate;
 
                 auto size = window->get_size();
                 Renderer.pipelineText->updateText(ss.str(), { size[0] - 1000, size[1] - 600 });
