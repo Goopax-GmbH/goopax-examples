@@ -6,9 +6,8 @@
     template<typename XX>               \
     using goopax_struct_changetype = NAME<typename goopax_struct_changetype<X, XX>::type>;
 
-namespace heapsort
+namespace goopax::heapsort
 {
-using namespace goopax;
 using std::max;
 using std::min;
 using std::pair;

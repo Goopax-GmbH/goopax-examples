@@ -284,35 +284,52 @@ public:
         tile_k = 16;
         ls = 256;
 
-        if (bitsize<c_float_type>::value >= 32)
+        if (device.get_envmode() == env_METAL)
         {
+            ls = device.default_local_size();
             tile_m = 32;
-            tile_n = 64;
-        }
-        if (bitsize<a_float_type>::value <= 8)
-        {
-            tile_k = 32;
-        }
-        if (std::is_same_v<a_float_type_nodebug, precision::fp4e2m1>)
-        {
-            tile_k = 64;
-        }
-        if (std::is_same_v<a_float_type_nodebug, double>)
-        {
-            tile_m = 8;
-            tile_n = 16;
-        }
-        if (is_sparse)
-        {
-            if (bitsize<c_float_type>::value == 16 && bitsize<a_float_type>::value == 16)
+            tile_k = 16;
+            if (bitsize<a_float_type>::value == 32)
             {
-            }
-            else if (bitsize<a_float_type>::value == 32)
-            {
+                tile_n = 16;
             }
             else
             {
-                tile_k *= 2;
+                tile_n = 32;
+            }
+        }
+        else
+        {
+            if (bitsize<c_float_type>::value >= 32)
+            {
+                tile_m = 32;
+                tile_n = 64;
+            }
+            if (bitsize<a_float_type>::value <= 8)
+            {
+                tile_k = 32;
+            }
+            if (std::is_same_v<a_float_type_nodebug, precision::fp4e2m1>)
+            {
+                tile_k = 64;
+            }
+            if (std::is_same_v<a_float_type_nodebug, double>)
+            {
+                tile_m = 8;
+                tile_n = 16;
+            }
+            if (is_sparse)
+            {
+                if (bitsize<c_float_type>::value == 16 && bitsize<a_float_type>::value == 16)
+                {
+                }
+                else if (bitsize<a_float_type>::value == 32)
+                {
+                }
+                else
+                {
+                    tile_k *= 2;
+                }
             }
         }
 
