@@ -119,7 +119,7 @@ int main(int argc, char** argv)
 #else
     // Parallel version. Multiple particles are handled in parallel by each thread. Hence better use of registers. Hence
     // higher performance.
-    const unsigned par = 16;
+    const unsigned par = (device.max_registers() > 140) ? 16 : 8;
     kernel CalculateForce(
         device,
         [dt, mass, N, par](
