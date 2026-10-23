@@ -112,7 +112,7 @@ int main(int, char**)
         cout << "Data type `double` not available on the device. Leaving." << endl;
         return EXIT_FAILURE;
     }
-    
+
     kernel render(window->device, make_kernel_function(type_enum<float>::value));
 
     complex<double> moveto = { -0.796570904132624102, 0.183652206054726097 };
