@@ -38,6 +38,7 @@ PARAMOPT<unsigned int> TILE_K("tile_k", 0);
 
 PARAMOPT<bool> USE_BULK_COPY("use_bulk_copy", true);
 PARAMOPT<bool> USE_ASYNC_COPY("use_async_copy", true);
+PARAMOPT<int> TEST_ID("test_id", -1);
 
 template<typename T>
 void fill_random(buffer<T>& a)
@@ -776,6 +777,8 @@ Tdouble verify(const_buffer_map<a_float_type> Adata,
     return (rhave - rwant).norm() / rwant.norm();
 }
 
+static int test_id = -1;
+
 template<typename a_float_type,
          typename b_float_type,
          typename c_float_type,
@@ -792,7 +795,11 @@ void run2(goopax_device device)
         // cout << "  Not supported." << endl;
         return;
     }
-    cout << "T_A=" << type_name(type_enum<a_float_type>::value) << ", T_B=" << type_name(type_enum<b_float_type>::value)
+
+    ++test_id;
+    if (TEST_ID() != -1 && TEST_ID() != test_id) return;
+    
+    cout << test_id << ": T_A=" << type_name(type_enum<a_float_type>::value) << ", T_B=" << type_name(type_enum<b_float_type>::value)
          << ", T_C=" << type_name(type_enum<c_float_type>::value) << ", mnk=" << M << "," << N << "," << K
          << ", tile_m=" << matmul.tile_m << ", tile_n=" << matmul.tile_n << ", tile_k=" << matmul.tile_k
          << ", ls=" << matmul.ls << flush;
