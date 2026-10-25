@@ -797,9 +797,11 @@ void run2(goopax_device device)
     }
 
     ++test_id;
-    if (TEST_ID() != -1 && TEST_ID() != test_id) return;
-    
-    cout << test_id << ": T_A=" << type_name(type_enum<a_float_type>::value) << ", T_B=" << type_name(type_enum<b_float_type>::value)
+    if (TEST_ID() != -1 && TEST_ID() != test_id)
+        return;
+
+    cout << test_id << ": T_A=" << type_name(type_enum<a_float_type>::value)
+         << ", T_B=" << type_name(type_enum<b_float_type>::value)
          << ", T_C=" << type_name(type_enum<c_float_type>::value) << ", mnk=" << M << "," << N << "," << K
          << ", tile_m=" << matmul.tile_m << ", tile_n=" << matmul.tile_n << ", tile_k=" << matmul.tile_k
          << ", ls=" << matmul.ls << flush;
