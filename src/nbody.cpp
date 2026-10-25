@@ -111,10 +111,11 @@ int main(int argc, char** argv)
 #if WITH_OPENGL && GOOPAX_DRAW_FOUND_OPENGL_HEADERS
     opengl_buffer<Vector3<float>> x_gl;
     opengl_buffer<Vector3<float>> x2_gl;
-    if (x.empty())
+    if (x.empty() && dynamic_cast<sdl_window_gl*>(window.get()))
+
     {
-        x.assign(device, N);
-        x2.assign(device, N);
+        x_gl = opengl_buffer<Vector3<float>>(device, N);
+        x2_gl = opengl_buffer<Vector3<float>>(device, N);
         x = x_gl;
         x2 = x2_gl;
     }
@@ -153,7 +154,7 @@ int main(int argc, char** argv)
     const unsigned par = (device.max_registers() > 140) ? 16 : 8;
     kernel CalculateForce(
         device,
-        [dt, mass, N](const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
+        [dt, mass, N, par](const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
             gpu_for_group(0, N, par, [&](gpu_uint i) {
                 vector<Vector3<gpu_float>> F(par, { 0, 0, 0 });
 
@@ -287,9 +288,9 @@ int main(int argc, char** argv)
         }
 #endif
 #if WITH_OPENGL && GOOPAX_DRAW_FOUND_OPENGL_HEADERS
-        else if (true)
+        else if (!x_gl.empty())
         {
-            render(window->window, x);
+            render(window->window, x_gl);
             SDL_GL_SwapWindow(window->window);
             swap(x_gl, x2_gl);
         }
