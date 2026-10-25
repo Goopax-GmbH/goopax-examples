@@ -152,35 +152,36 @@ int main(int argc, char** argv)
     // Parallel version. Multiple particles are handled in parallel by each thread. Hence better use of registers. Hence
     // higher performance.
     const unsigned par = (device.max_registers() > 140) ? 16 : 8;
-    kernel CalculateForce(
-        device,
-        [dt, mass, N, par](const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
-            gpu_for_group(0, N, par, [&](gpu_uint i) {
-                vector<Vector3<gpu_float>> F(par, { 0, 0, 0 });
+    kernel CalculateForce(device,
+                          [dt, mass, N, par](const resource<Vector3<float>>& x,
+                                             resource<Vector3<float>>& v,
+                                             resource<Vector3<float>>& xnew) {
+                              gpu_for_group(0, N, par, [&](gpu_uint i) {
+                                  vector<Vector3<gpu_float>> F(par, { 0, 0, 0 });
 
-                gpu_for_local(x.begin(), x.begin() + N, [&](auto other_p) {
-                    for (unsigned s = 0; s < par; ++s)
-                    {
-                        Vector3<gpu_float> r = *other_p - x[i + s];
-                        F[s] += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
-                    }
-                });
+                                  gpu_for_local(x.begin(), x.begin() + N, [&](auto other_p) {
+                                      for (unsigned s = 0; s < par; ++s)
+                                      {
+                                          Vector3<gpu_float> r = *other_p - x[i + s];
+                                          F[s] += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
+                                      }
+                                  });
 
-                for (unsigned s = 0; s < par; ++s)
-                {
-                    F[s] = work_group_reduce_add(F[s], local_size());
-                }
+                                  for (unsigned s = 0; s < par; ++s)
+                                  {
+                                      F[s] = work_group_reduce_add(F[s], local_size());
+                                  }
 
-                gpu_if(elect().first)
-                {
-                    for (unsigned s = 0; s < par; ++s)
-                    {
-                        v[i + s] += F[s] * (dt * mass);
-                        xnew[i + s] = x[i + s] + v[i + s] * dt;
-                    }
-                }
-            });
-        });
+                                  gpu_if(elect().first)
+                                  {
+                                      for (unsigned s = 0; s < par; ++s)
+                                      {
+                                          v[i + s] += F[s] * (dt * mass);
+                                          xnew[i + s] = x[i + s] + v[i + s] * dt;
+                                      }
+                                  }
+                              });
+                          });
 
 #endif
 
