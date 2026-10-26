@@ -32,6 +32,7 @@ static constexpr size_t multipole_alignment = 16;
 
 #define CONSTANT_MASS 1
 #define COMPARISON_TESTS 0
+#define DYNAMIC_GS 1
 
 constexpr unsigned min_tree_depth = 14;
 
@@ -1288,6 +1289,9 @@ struct Cosmos : public CosmosData<T>
                 auto d0 = steady_clock::now();
 #endif
 
+#if DYNAMIC_GS
+		downwards2[with_potential].change_global_size(intceil(this->split_ranges[depth - 1].second - this->split_ranges[depth - 1].first, (Tuint)downwards2[with_potential].local_size()));
+#endif
                 downwards2[with_potential](this->split_ranges[depth - 1]);
 
 #if WITH_TIMINGS
@@ -2706,7 +2710,13 @@ struct Cosmos : public CosmosData<T>
 
             futures.push(async(policy, [this, with_potential]() {
                 downwards2[with_potential].assign(device, [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
-                    gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent) {
+#if DYNAMIC_GS
+		  gpu_uint parent = split_range.first + global_id();
+		  gpu_if(parent < split_range.second)
+#else
+		  gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent)
+#endif
+		    {
                         gpu_assert(this->tree[parent].need_split);
 
                         const auto parent_treenode =
@@ -2762,8 +2772,16 @@ struct Cosmos : public CosmosData<T>
                             gpu_uint self = this->tree[parent].children[c];
                             force_tree[self % force_tree.size()] = static_cast<gpu_force_multipole>(new_multipole);
                         }
+#if DYNAMIC_GS
+		    }
+#else
                     });
-                });
+#endif		  
+		  }
+#if DYNAMIC_GS
+		  ,0, 0, true
+#endif
+		  );
                 cout << "created downwards [with_potential=" << with_potential << "]" << endl;
             }));
         }
