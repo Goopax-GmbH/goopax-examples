@@ -1140,7 +1140,7 @@ int main(int argc, char** argv)
                         SDL_GL_SwapWindow(window->window);
                     }
 #endif
-                    else
+                    //else
                     {
                         cout << "x=" << const_buffer_map(cosmos.x, 0, 10) << "..." << endl;
                     }
