@@ -51,16 +51,6 @@ https://developer.android.com/studio/projects/configure-cmake
 
 Set the ANDROID_NDK environment variable to the location of the Android NDK.
 
-    export ANDROID_NDK=$HOME/Android/Sdk/ndk/29.0.14206865
-
-Set the PATH variable so that both ninja and corresponding cmake are found.
-
-    export PATH=$HOME/Android/Sdk/cmake/4.1.2/bin:$PATH
-
-Set the PATH variable so that the ndk toolchain is preferred.
-
-    export PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-
 Then run something like this:
 
     ./build-all.sh -G "Ninja" -DCMAKE_SYSTEM_NAME="Android" -DCMAKE_ANDROID_STL_TYPE="c++_static" -DANDROID_ABI="arm64-v8a" -DANDROID_PLATFORM="android-35" -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" -DCMAKE_FIND_ROOT_PATH="$PWD/../;$PWD/build/ext/eigen;$PWD/build/ext/glm;$PWD/build/ext/sdl3;$PWD/build/ext/build_boost-prefix/src/build_boost/include;$PWD/build/ext/opencv/sdk/native/jni" -DGOOPAX_DRAW_WITH_OPENGL=0 -DGOOPAX_DRAW_WITH_METAL=0 -DGOOPAX_DRAW_WITH_VULKAN=1

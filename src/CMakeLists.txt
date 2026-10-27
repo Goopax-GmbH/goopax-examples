@@ -23,7 +23,7 @@ if (WIN32)
   endif()
 endif()
 
-if (ANDROID OR IOS)
+if (ANDROID)
   message("Applying toolchain workaround, so that packages are found.")
   set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
   set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
