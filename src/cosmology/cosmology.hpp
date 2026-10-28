@@ -1289,10 +1289,6 @@ struct Cosmos : public CosmosData<T>
                 auto d0 = steady_clock::now();
 #endif
 
-		cout << "Calling downwards2. split_ranges[" << depth-1 << "]=" << split_ranges[depth-1]
-		     << ", size=" << this->split_ranges[depth - 1].second - this->split_ranges[depth - 1].first
-		     << ", force_tree.size()=" << force_tree.size()
-		     << endl;
 #if DYNAMIC_GS
 		downwards2[with_potential].change_global_size(intceil(this->split_ranges[depth - 1].second - this->split_ranges[depth - 1].first, (Tuint)downwards2[with_potential].local_size()));
 #endif
