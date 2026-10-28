@@ -1,7 +1,7 @@
 #pragma once
 
-#define WITH_TIMINGS 0
-#define PERFORMANCE_RUN 0
+#define WITH_TIMINGS 1
+#define PERFORMANCE_RUN 1
 
 #if WITH_OPENCV
 #include <opencv2/opencv.hpp>
@@ -33,6 +33,7 @@ static constexpr size_t multipole_alignment = 16;
 #define CONSTANT_MASS 1
 #define COMPARISON_TESTS 0
 #define DYNAMIC_GS 0
+#define OPTIMIZE_FOR_NVIDIA 1
 
 constexpr unsigned min_tree_depth = 14;
 
@@ -2710,7 +2711,7 @@ struct Cosmos : public CosmosData<T>
 
             futures.push(async(policy, [this, with_potential]() {
                 downwards2[with_potential].assign(device, [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
-#if DYNAMIC_GS
+#if DYNAMIC_GS && 0
 		  gpu_uint parent = split_range.first + global_id();
 		  gpu_if(parent < split_range.second)
 #else
@@ -2772,14 +2773,18 @@ struct Cosmos : public CosmosData<T>
                             gpu_uint self = this->tree[parent].children[c];
                             force_tree[self % force_tree.size()] = static_cast<gpu_force_multipole>(new_multipole);
                         }
-#if DYNAMIC_GS
+#if DYNAMIC_GS && 0
 		    }
 #else
                     });
 #endif		  
 		  }
-#if DYNAMIC_GS
+#if DYNAMIC_GS && 0
 		  ,0, 0, true
+#else
+#if OPTIMIZE_FOR_NVIDIA
+		  , 0, device.default_global_size_max()
+#endif
 #endif
 		  );
                 cout << "created downwards [with_potential=" << with_potential << "]" << endl;
