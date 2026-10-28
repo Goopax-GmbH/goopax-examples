@@ -32,7 +32,7 @@ static constexpr size_t multipole_alignment = 16;
 
 #define CONSTANT_MASS 1
 #define COMPARISON_TESTS 0
-#define DYNAMIC_GS 1
+#define DYNAMIC_GS 0
 
 constexpr unsigned min_tree_depth = 14;
 
