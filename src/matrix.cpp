@@ -15,6 +15,7 @@
 #include <goopax_extra/random.hpp>
 #include <goopax_extra/types.hpp>
 #include <random>
+#include <optional>
 
 using namespace Eigen;
 using namespace std::chrono;
