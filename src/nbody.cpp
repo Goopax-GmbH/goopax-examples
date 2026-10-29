@@ -7,6 +7,10 @@
 #include <chrono>
 #include <goopax_draw/particle.hpp>
 #include <goopax_draw/window_sdl.h>
+#include <goopax_extra/output.hpp>
+#if WITH_OPENGL
+#include <goopax_draw/particle/renderer_gl.hpp>
+#endif
 #if WITH_VULKAN
 #include <goopax_draw/window_vulkan.h>
 #endif
@@ -19,7 +23,7 @@ using namespace goopax;
 using namespace std;
 using goopax::detail::PI;
 
-PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 65536); // Number of particles
+PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 131072); // Number of particles
 PARAMOPT<Tdouble> DT("dt", 5E-3);
 
 void init(buffer<Vector3<float>>& x, buffer<Vector3<float>>& v)
@@ -74,29 +78,59 @@ int main(int argc, char** argv)
         sdl_window::create("nbody", { 1024, 768 }, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     goopax_device device = window->device;
 
+    buffer<Vector3<float>> x;
+    buffer<Vector3<float>> x2;
 #if WITH_METAL
-    buffer<Vector3<float>> x(device, N);
-    buffer<Vector3<float>> x2(device, N);
-    particle_renderer Renderer(dynamic_cast<sdl_window_metal&>(*window));
-#elif WITH_VULKAN
-
-    backend_create_params params = {
-        .vulkan = { .usage_bits = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-                                  | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
-    };
-
-    buffer<Vector<float, 3>> x(window->device, N, params);
-    buffer<Vector<float, 3>> x2(window->device, N, params);
-
-    goopax_draw::vulkan::Renderer Renderer(dynamic_cast<sdl_window_vulkan&>(*window), 1, { 1000, 500 });
-#else
-    opengl_buffer<Vector3<float>> x(device, N);
-    opengl_buffer<Vector3<float>> x2(device, N);
+    optional<particle_renderer> MetalRenderer;
+    if (auto* w = dynamic_cast<sdl_window_metal*>(window.get()))
+    {
+        MetalRenderer.emplace(*w);
+        x.assign(device, N);
+        x2.assign(device, N);
+    }
 #endif
+#if WITH_VULKAN
+    optional<goopax_draw::vulkan::Renderer> VulkanRenderer;
+    if (x.empty())
+    {
+        if (auto* w = dynamic_cast<sdl_window_vulkan*>(window.get()))
+        {
+            backend_create_params params = {
+                .vulkan = { .usage_bits = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                                          | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                                          | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR }
+            };
+
+            x.assign(window->device, N, params);
+            x2.assign(window->device, N, params);
+
+            VulkanRenderer.emplace(*w, 1, array<unsigned, 2>{ 1000, 500 });
+        }
+    }
+#endif
+#if WITH_OPENGL && GOOPAX_DRAW_FOUND_OPENGL_HEADERS
+    opengl_buffer<Vector3<float>> x_gl;
+    opengl_buffer<Vector3<float>> x2_gl;
+    if (x.empty() && dynamic_cast<sdl_window_gl*>(window.get()))
+
+    {
+        x_gl = opengl_buffer<Vector3<float>>(device, N);
+        x2_gl = opengl_buffer<Vector3<float>>(device, N);
+        x = x_gl;
+        x2 = x2_gl;
+    }
+#endif
+    if (x.empty())
+    {
+        x.assign(device, N);
+        x2.assign(device, N);
+    }
 
     buffer<Vector3<float>> v(device, N);
     init(x, v);
 
+#if 0
+    // Old version
     kernel CalculateForce(
         device,
         [dt, mass](const resource<Vector3<float>>& x, resource<Vector3<float>>& v, resource<Vector3<float>>& xnew) {
@@ -113,6 +147,43 @@ int main(int argc, char** argv)
         },
         0,
         N);
+
+#else
+    // Parallel version. Multiple particles are handled in parallel by each thread. Hence better use of registers. Hence
+    // higher performance.
+    const unsigned par = (device.max_registers() > 140) ? 16 : 8;
+    kernel CalculateForce(device,
+                          [dt, mass, N, par](const resource<Vector3<float>>& x,
+                                             resource<Vector3<float>>& v,
+                                             resource<Vector3<float>>& xnew) {
+                              gpu_for_group(0, N, par, [&](gpu_uint i) {
+                                  vector<Vector3<gpu_float>> F(par, { 0, 0, 0 });
+
+                                  gpu_for_local(x.begin(), x.begin() + N, [&](auto other_p) {
+                                      for (unsigned s = 0; s < par; ++s)
+                                      {
+                                          Vector3<gpu_float> r = *other_p - x[i + s];
+                                          F[s] += r * pow<-3, 2>(r.squaredNorm() + 1E-20f);
+                                      }
+                                  });
+
+                                  for (unsigned s = 0; s < par; ++s)
+                                  {
+                                      F[s] = work_group_reduce_add(F[s], local_size());
+                                  }
+
+                                  gpu_if(elect().first)
+                                  {
+                                      for (unsigned s = 0; s < par; ++s)
+                                      {
+                                          v[i + s] += F[s] * (dt * mass);
+                                          xnew[i + s] = x[i + s] + v[i + s] * dt;
+                                      }
+                                  }
+                              });
+                          });
+
+#endif
 
     float distance = 2;
     Vector<float, 2> theta = { 0, 0 };
@@ -186,27 +257,49 @@ int main(int argc, char** argv)
             frametime = now;
 
 #if WITH_VULKAN
-            if (Renderer.pipelineText)
+            if (VulkanRenderer && VulkanRenderer->pipelineText)
             {
                 stringstream ss;
-                ss << "N-Body (direct force)" << endl << "device: " << device.name() << endl << "fps: " << rate;
+                ss << "N-Body (direct force)" << endl
+                   << "device: " << device.name() << endl
+                   << "N=" << N << endl
+                   << "fps: " << rate;
 
                 auto size = window->get_size();
-                Renderer.pipelineText->updateText(ss.str(), { size[0] - 1000, size[1] - 600 });
+                VulkanRenderer->pipelineText->updateText(ss.str(), { size[0] - 1000, size[1] - 600 });
             }
 #else
             window->set_title("nbody. N=" + to_string(N) + ", fps=" + to_string(rate));
 #endif
         }
 
+        if (false)
+        {
+        }
 #if WITH_METAL
-        Renderer.render(x);
-#elif WITH_VULKAN
-        Renderer.render(x, distance, theta);
-#else
-        render(window->window, x);
-        SDL_GL_SwapWindow(window->window);
+        else if (MetalRenderer)
+        {
+            MetalRenderer->render(x);
+        }
 #endif
+#if WITH_VULKAN
+        else if (VulkanRenderer)
+        {
+            VulkanRenderer->render(x, distance, theta);
+        }
+#endif
+#if WITH_OPENGL && GOOPAX_DRAW_FOUND_OPENGL_HEADERS
+        else if (!x_gl.empty())
+        {
+            render(window->window, x_gl);
+            SDL_GL_SwapWindow(window->window);
+            swap(x_gl, x2_gl);
+        }
+#endif
+        else
+        {
+            cout << "x=" << const_buffer_map(x, 0, min(x.size(), unsigned(5))) << "..." << endl;
+        }
 
         // Because there are no other synchronization points in this demo
         // (we are not evaluating any results from the GPU), this wait is

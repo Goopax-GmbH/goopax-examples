@@ -83,7 +83,7 @@ int main()
                 {
                     cout << " (min alignment: " << d.min_host_ptr_alignment() << ")";
                 }
-                cout << endl;
+                cout << endl << "    host_numa_id=" << d.host_numa_id() << ", gpu_numa_id=" << d.gpu_numa_id() << endl;
                 cout << "    supported types:";
                 const char* delim = " ";
 
@@ -99,11 +99,7 @@ int main()
 
                 cout << "    warp_matrix modes:" << endl;
 
-                if (d.get_envmode() == env_CPU)
-                {
-                    cout << "      ANY" << endl;
-                }
-                else if (d.get_matrix_support_table())
+                if (d.get_matrix_support_table())
                 {
                     for (auto* mi = d.get_matrix_support_table(); mi; mi = mi->next)
                     {

@@ -15,6 +15,24 @@
 
    By default, this program uses bfloat16 types for higher order terms.
    If your GPU does not support bfloat16, disable HAVE_BFLOAT16.
+
+   Use the mouse to rotate and zoom.
+
+   The on-screen display is optimised for 4K with full-screen (press `f`). If you run in lower resolution, you will not
+   see the info text, unless you make some adjustments.
+
+
+   Using cosmological initial conditions created with MUSIC2:
+
+   For a quick start, you can build target `build_music` (only tested on Linux):
+
+     cd build/cosmology
+     make build_music
+
+   This will fetch the sources and build MUSIC2. It may have some additional dependencies, you will see. Then open
+   another terminal and run the scripts `create_random.sh` and `run.sh` both in parallel. This will run the demo exactly
+   as presented at the SC26.
+
 */
 
 #include "cosmology.hpp"
@@ -36,7 +54,7 @@ PARAMOPT<Tsize_t> NUM_PARTICLES("num_particles", 1000000); // Number of particle
 PARAMOPT<double> TREE_FACTOR("tree_factor", 0.8);
 PARAMOPT<double> FORCE_TREE_FACTOR("force_tree_factor", 0.3);
 PARAMOPT<Tdouble> MAX_DISTFAC("max_distfac", 1.8);
-PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 410);
+PARAMOPT<Tuint> MAX_NODESIZE("max_nodesize", 650);
 PARAMOPT<Tdouble> DT("dt", 1E-3);
 
 template<class T>
@@ -535,10 +553,14 @@ void generate_IC(buffer_map<Vector<Tfloat, 3>> x, buffer_map<Vector<Tfloat, 3>> 
 
 int main(int argc, char** argv)
 {
-    cout << "sizeof(matter_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl;
-    cout << "sizeof(force_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl;
-    cout << "alignof(matter_multipole)=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl;
-    cout << "alignof(force_multipole)=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl;
+    cout << "sizeof(matter_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole)
+         << ", alignof=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::matter_multipole) << endl
+         << "sizeof(force_multipole)=" << sizeof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole)
+         << ", alignof=" << alignof(Cosmos<Tfloat, MULTIPOLE_ORDER>::force_multipole) << endl
+         << "sizeof(treenode)=" << sizeof(treenode<>) << ", alignof=" << alignof(treenode<>) << endl
+         << "sizeof(scratch_treenode)=" << sizeof(scratch_treenode<Tfloat>)
+         << ", alignof=" << alignof(scratch_treenode<Tfloat>) << endl
+         << endl;
 
     init_params(argc, argv);
 
@@ -578,14 +600,23 @@ int main(int argc, char** argv)
         }
 
         cout << "device.max_registers()=" << device.max_registers() << endl;
-        if (device.max_registers() < 220)
+        if (device.max_registers() < 220 && device.get_envmode() != env_CPU)
         {
             cout << "cosmology is optimised for GPUs with 256 registers per thread. It will perform poorly on other "
-                    "devices. If you think you know what you are doign, remove this exit(1) call and proceed at your "
+                    "devices. If you think you know what you are doing, remove this exit(1) call and proceed at your "
                     "own risk."
                  << endl;
             exit(1);
         }
+#if HAVE_BFLOAT16_ARITHMETICS
+        if (!device.support_type(type_enum<precision::bf16>::value))
+        {
+            cout << "The device does not support bf16 arithmetics. You should disable HAVE_BFLOAT16_ARITHMETICS in "
+                    "cosmology.hpp."
+                 << endl;
+            exit(1);
+        }
+#endif
 
 #if GOOPAX_DEBUG
         // Increasing number of threads to have meaningful race condition checks.
@@ -636,7 +667,7 @@ int main(int argc, char** argv)
                 {
                     hdf5_reader reader(fn.string());
                     num_particles = reader.npart[1];
-                    make_tree_every = 16;
+                    make_tree_every = 32;
                 }
 #endif
             }
@@ -902,9 +933,12 @@ int main(int argc, char** argv)
 #if PERFORMANCE_RUN
                     auto simu_stop = steady_clock::now();
                     cout << "PERFORMANCE: " << step - 1 << " steps in "
-                         << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << endl;
-                    cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE() << endl;
-                    // return 0;
+                         << duration_cast<std::chrono::microseconds>(simu_stop - simu_start) << " -> "
+                         << duration_cast<std::chrono::microseconds>((simu_stop - simu_start) / (unrange(step) - 1))
+                         << " per step" << endl;
+                    cout << "make_tree_every=" << make_tree_every << ". MAX_NODESIZE=" << MAX_NODESIZE()
+                         << ", min_tree_depth=" << min_tree_depth << endl;
+                    return 0;
 #endif
                     break;
                 }
@@ -1052,12 +1086,12 @@ int main(int argc, char** argv)
 
                             if (cosmic.is_cosmic)
                             {
-                                double caltime = cosmic.t - cosmic.today + 2025 * yr_;
+                                double caltime = cosmic.t - cosmic.today + 3297975 * yr_ + 2025 * yr_ + 2026 * yr_;
 
                                 ss << "time: " << cosmic.t / (1E9 * yr_) << " Gyr"
                                    << " ("
                                    << static_cast<int64_t>(std::abs(caltime + (caltime >= 0 ? 1.0 : 0.0) * yr_) / yr_)
-                                   << ((cosmic.t - cosmic.today + 2025 * yr_ > 0) ? " AD)" : " BC)") << endl
+                                   << ((caltime > 0) ? " AD)" : " BC)") << endl
                                    << "scale factor: " << cosmic.a << " (z=" << 1 / cosmic.a - 1 << ")" << endl
                                    << endl;
                             }

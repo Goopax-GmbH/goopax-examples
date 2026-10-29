@@ -13,6 +13,13 @@ option(WITH_CUDA "WITH_CUDA" OFF)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH on)
 
+
+if(APPLE AND CMAKE_GENERATOR STREQUAL "Xcode")
+  set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym")
+  # optional but recommended so Release also keeps symbols
+  set(CMAKE_XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS "YES")
+endif()
+
 if (WIN32)
   if (MSVC AND NOT WITH_CUDA)
     add_compile_options(/bigobj)

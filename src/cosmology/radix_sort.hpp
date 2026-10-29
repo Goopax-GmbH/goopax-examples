@@ -1,19 +1,17 @@
 #include <goopax_extra/alloc.hpp>
 #include <goopax_extra/struct_types.hpp>
 
-template<class A, class B, class S>
-S& operator<<(S& s, const pair<A, B>& p)
-{
-    return s << "<" << p.first << "|" << p.second << ">;";
-}
-
 #define GOOPAX_PREPARE_STRUCT2(NAME, X) \
     using goopax_struct_type = X;       \
     template<typename XX>               \
     using goopax_struct_changetype = NAME<typename goopax_struct_changetype<X, XX>::type>;
 
-namespace heapsort
+namespace goopax::heapsort
 {
+using std::max;
+using std::min;
+using std::pair;
+
 template<typename RES, typename CMP>
 void siftdown(RES& a, const gpu_uint start, const gpu_uint end, CMP cmp)
 {
@@ -50,16 +48,21 @@ void heapsort(RES& a, const gpu_uint count, CMP cmp = std::less<>())
     });
 }
 
+template<typename RES, typename CMP = std::less<>>
+void heapsort(RES& a, CMP cmp = std::less<>())
+{
+    heapsort(a, a.size(), cmp);
+}
+
 template<typename T, typename CMP = std::less<>>
 void sort_tiny(gpu_type<T*> data, gpu_uint size, unsigned int max_size, CMP cmp = std::less<>())
 {
+    gpu_assert(size <= max_size);
     private_mem<T> tmp(max_size);
 
     gpu_for(0, size, [&](gpu_uint k) { tmp[k] = data[k]; });
     heapsort(tmp, size, cmp);
     gpu_for(0, size, [&](gpu_uint k) { data[k] = tmp[k]; });
-}
-
 }
 
 template<typename T, typename key_t>
@@ -145,17 +148,12 @@ struct radix_sort
         goopax_device device = plist1.get_device();
         const unsigned int bits = bigrange_bits;
 
-        vector<pair<Tuint, Tuint>> bigrangevec;
+        std::vector<pair<Tuint, Tuint>> bigrangevec;
         bigrangevec.reserve(this->ranges.size());
         bigrangevec.assign({ { 0, plist1.size() } });
 
-        vector<smallrange_info<>> smallrangevec;
+        std::vector<smallrange_info<>> smallrangevec;
         smallrangevec.reserve(this->smallrange.size());
-
-#if WITH_TIMINGS
-        device.wait_all();
-        auto t0 = steady_clock::now();
-#endif
 
         for (Tint shift_i = Tint(max_depthbits) - bits; shift_i >= -Tint(bits) + 1; shift_i -= bits)
         {
@@ -189,7 +187,7 @@ struct radix_sort
             {
                 const_buffer_map<Tuint> key_offsets(this->key_offsets);
 
-                vector<pair<Tuint, Tuint>> newbigrangevec;
+                std::vector<pair<Tuint, Tuint>> newbigrangevec;
                 const Tsize_t max_size = max(plist1.size() / (2 * ng_use), (Tuint)256);
                 for (Tuint r = 0; r < bigrangevec.size(); ++r)
                 {
@@ -228,11 +226,6 @@ struct radix_sort
             swap(plist1, plist2);
         }
 
-#if WITH_TIMINGS
-        device.wait_all();
-        auto t1 = steady_clock::now();
-#endif
-
         enum
         {
             max_bits_hardlimit = 8
@@ -253,16 +246,6 @@ struct radix_sort
         smallsortfunc(plist1, plist2, smallrange, smallrangevec.size());
 
         //    cout1 << "plist1=" << plist1 << endl;
-#if WITH_TIMINGS
-        device.wait_all();
-        auto t2 = steady_clock::now();
-#endif
-
-#if WITH_TIMINGS
-        cout << "bigrange: " << duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms" << endl;
-        cout << "smallrange: " << duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << endl;
-#endif
-
 #ifndef NDEBUG
         testsortfunc(plist1, plist1.size());
 #endif
@@ -517,3 +500,4 @@ struct radix_sort
 #endif
     }
 };
+}

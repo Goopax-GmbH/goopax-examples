@@ -66,9 +66,8 @@ void pingpong()
 
                         if (VERB)
                         {
-                            gpu_ostream DUMP(cout);
-                            DUMP << "kernel " << my_id << ". device=" << get_current_build_device().name()
-                                 << ". sync: " << expect << " -> " << expect + 1 << endl;
+                            gpu_cout << "kernel " << my_id << ". device=" << get_current_build_device().name()
+                                     << ". sync: " << expect << " -> " << expect + 1 << endl;
                         }
 
                         // Handing over to the next id.
