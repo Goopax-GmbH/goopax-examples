@@ -863,9 +863,15 @@ void run2(goopax_device device)
     auto t2 = steady_clock::now();
 
     double OPS = double(M) * N * K * 2 / duration_cast<duration<double>>(t2 - t1).count();
+#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0)
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
          << " TOPS" << flush;
+#else
+    cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0).count()
+         << "us, multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1).count() << "us -> Performance: " << OPS * 1E-12
+         << " TOPS" << flush;
+#endif
 
     if (VERB)
     {
