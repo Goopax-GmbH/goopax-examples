@@ -17,7 +17,10 @@
 #include <random>
 #include <optional>
 
-using namespace Eigen;
+using Eigen::Matrix;
+using Eigen::MatrixX;
+using Eigen::Vector;
+using Eigen::VectorX;
 using namespace std::chrono;
 using namespace goopax;
 using namespace std;
