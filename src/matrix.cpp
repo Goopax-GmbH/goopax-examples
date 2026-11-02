@@ -14,8 +14,8 @@
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/random.hpp>
 #include <goopax_extra/types.hpp>
-#include <random>
 #include <optional>
+#include <random>
 
 using Eigen::Matrix;
 using Eigen::MatrixX;
@@ -869,8 +869,8 @@ void run2(goopax_device device)
          << " TOPS" << flush;
 #else
     cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0).count()
-         << "us, multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1).count() << "us -> Performance: " << OPS * 1E-12
-         << " TOPS" << flush;
+         << "us, multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1).count()
+         << "us -> Performance: " << OPS * 1E-12 << " TOPS" << flush;
 #endif
 
     if (VERB)
