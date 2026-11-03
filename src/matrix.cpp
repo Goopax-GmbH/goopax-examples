@@ -17,8 +17,12 @@
 #include <optional>
 #include <random>
 
+using Eigen::ColMajor;
+using Eigen::Dynamic;
+using Eigen::Map;
 using Eigen::Matrix;
 using Eigen::MatrixX;
+using Eigen::RowMajor;
 using Eigen::Vector;
 using Eigen::VectorX;
 using namespace std::chrono;
