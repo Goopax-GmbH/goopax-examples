@@ -10,7 +10,7 @@ int main()
 {
     std::vector<kernel<void()>> kernels;
 
-    for (goopax_device device : devices())
+    for (goopax_device device : devices(env_ALL))
     {
         kernels.emplace_back(device, []() { gpu_cout << "Hello from thread " << global_id() << std::endl; });
     }
