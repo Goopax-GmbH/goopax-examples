@@ -1291,7 +1291,9 @@ struct Cosmos : public CosmosData<T>
 #endif
 
 #if DYNAMIC_GS
-		downwards2[with_potential].change_global_size(intceil(this->split_ranges[depth - 1].second - this->split_ranges[depth - 1].first, (Tuint)downwards2[with_potential].local_size()));
+                downwards2[with_potential].change_global_size(
+                    intceil(this->split_ranges[depth - 1].second - this->split_ranges[depth - 1].first,
+                            (Tuint)downwards2[with_potential].local_size()));
 #endif
                 downwards2[with_potential](this->split_ranges[depth - 1]);
 
@@ -2710,83 +2712,89 @@ struct Cosmos : public CosmosData<T>
             }));
 
             futures.push(async(policy, [this, with_potential]() {
-                downwards2[with_potential].assign(device, [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
+                downwards2[with_potential].assign(
+                    device,
+                    [this, with_potential](pair<gpu_uint, gpu_uint> split_range) {
 #if DYNAMIC_GS && 0
-		  gpu_uint parent = split_range.first + global_id();
-		  gpu_if(parent < split_range.second)
+                        gpu_uint parent = split_range.first + global_id();
+                        gpu_if(parent < split_range.second)
 #else
 		  gpu_for_global(split_range.first, split_range.second, [&](gpu_uint parent)
 #endif
-		    {
-                        gpu_assert(this->tree[parent].need_split);
-
-                        const auto parent_treenode =
-                            static_cast<gpu_intermediate_force_multipole>(force_tree[parent % force_tree.size()]);
-
-                        array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
-                        array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
-
-#ifndef NDEBUG
-                        Tuint count2 = 0;
-#endif
-                        for (auto uncle : get_surrounding(parent, tree[parent].parent, 0, true, false))
                         {
-                            for (int c = 0; c < 2; ++c)
-                            {
-                                for (int c2 = 0; c2 < 2; ++c2)
-                                {
-                                    Vector<Tint, 3> cousinvec = vdata.parent2child(get<2>(uncle), c2 - c);
-                                    if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
-                                        && cousinvec.squaredNorm() != 0)
-                                    {
-                                        gpu_uint cousin = this->tree[get<0>(uncle)].children[c2];
+                            gpu_assert(this->tree[parent].need_split);
 
-                                        static_cast<gpu_intermediate_matter_multipole>(matter_tree[cousin])
-                                            .makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
-                                                       &new_multipole_f32_2[c],
-                                                       &new_multipole_bf16_2[c]);
+                            const auto parent_treenode =
+                                static_cast<gpu_intermediate_force_multipole>(force_tree[parent % force_tree.size()]);
+
+                            array<gpu_force_multipole_f32, 2> new_multipole_f32_2 = zero;
+                            array<gpu_force_multipole_bf16, 2> new_multipole_bf16_2 = zero;
 
 #ifndef NDEBUG
-                                        ++count2;
+                            Tuint count2 = 0;
 #endif
+                            for (auto uncle : get_surrounding(parent, tree[parent].parent, 0, true, false))
+                            {
+                                for (int c = 0; c < 2; ++c)
+                                {
+                                    for (int c2 = 0; c2 < 2; ++c2)
+                                    {
+                                        Vector<Tint, 3> cousinvec = vdata.parent2child(get<2>(uncle), c2 - c);
+                                        if (!vdata.local_indices.contains(vdata.make_index(cousinvec))
+                                            && cousinvec.squaredNorm() != 0)
+                                        {
+                                            gpu_uint cousin = this->tree[get<0>(uncle)].children[c2];
+
+                                            static_cast<gpu_intermediate_matter_multipole>(matter_tree[cousin])
+                                                .makelocal(vdata.make_real(-cousinvec, 2 * pow<1, 3>(2.0)),
+                                                           &new_multipole_f32_2[c],
+                                                           &new_multipole_bf16_2[c]);
+
+#ifndef NDEBUG
+                                            ++count2;
+#endif
+                                        }
                                     }
                                 }
                             }
-                        }
-                        assert(count2 == (this->num_surrounding() + 1) * 2);
+                            assert(count2 == (this->num_surrounding() + 1) * 2);
 
-                        for (int c = 0; c < 2; ++c)
-                        {
-                            auto new_multipole = static_cast<gpu_intermediate_force_multipole>(new_multipole_bf16_2[c]);
-                            new_multipole += static_cast<gpu_intermediate_force_multipole>(new_multipole_f32_2[c]);
-
-                            Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
-                            new_multipole += parent_treenode.rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
-
-                            if (!with_potential)
+                            for (int c = 0; c < 2; ++c)
                             {
-                                // Marking the first order multipole as unused. This should speed up the
-                                // calculations if the potential is not required.
-                                new_multipole.template get<0>().A[0] = {};
-                            }
+                                auto new_multipole =
+                                    static_cast<gpu_intermediate_force_multipole>(new_multipole_bf16_2[c]);
+                                new_multipole += static_cast<gpu_intermediate_force_multipole>(new_multipole_f32_2[c]);
 
-                            gpu_uint self = this->tree[parent].children[c];
-                            force_tree[self % force_tree.size()] = static_cast<gpu_force_multipole>(new_multipole);
-                        }
+                                Vector<Tdouble, 3> shiftvec = { 0, 0, pow<1, 3>(2.0) * (2 * c - 1) };
+                                new_multipole += parent_treenode.rot().scale_loc(pow<1, 3>(2.0)).shift_loc(shiftvec);
+
+                                if (!with_potential)
+                                {
+                                    // Marking the first order multipole as unused. This should speed up the
+                                    // calculations if the potential is not required.
+                                    new_multipole.template get<0>().A[0] = {};
+                                }
+
+                                gpu_uint self = this->tree[parent].children[c];
+                                force_tree[self % force_tree.size()] = static_cast<gpu_force_multipole>(new_multipole);
+                            }
 #if DYNAMIC_GS && 0
-		    }
+                        }
 #else
                     });
-#endif		  
-		  }
+#endif
+                    }
 #if DYNAMIC_GS && 0
-		  ,0, 0, true
+                    ,
+                    0,
+                    0,
+                    true
 #else
 #if OPTIMIZE_FOR_NVIDIA
 		  , 0, device.default_global_size_max()
 #endif
 #endif
-		  );
+                );
                 cout << "created downwards [with_potential=" << with_potential << "]" << endl;
             }));
         }
