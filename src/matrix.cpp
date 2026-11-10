@@ -14,9 +14,17 @@
 #include <goopax_extra/param.hpp>
 #include <goopax_extra/random.hpp>
 #include <goopax_extra/types.hpp>
+#include <optional>
 #include <random>
 
-using namespace Eigen;
+using Eigen::ColMajor;
+using Eigen::Dynamic;
+using Eigen::Map;
+using Eigen::Matrix;
+using Eigen::MatrixX;
+using Eigen::RowMajor;
+using Eigen::Vector;
+using Eigen::VectorX;
 using namespace std::chrono;
 using namespace goopax;
 using namespace std;
@@ -859,9 +867,15 @@ void run2(goopax_device device)
     auto t2 = steady_clock::now();
 
     double OPS = double(M) * N * K * 2 / duration_cast<duration<double>>(t2 - t1).count();
+#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0)
          << ", multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1) << " -> Performance: " << OPS * 1E-12
          << " TOPS" << flush;
+#else
+    cout << " preparing matrices: " << duration_cast<std::chrono::microseconds>(t1 - t0).count()
+         << "us, multiply: " << duration_cast<std::chrono::microseconds>(t2 - t1).count()
+         << "us -> Performance: " << OPS * 1E-12 << " TOPS" << flush;
+#endif
 
     if (VERB)
     {
